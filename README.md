@@ -26,6 +26,9 @@ SESSION_VAULT_TOKEN=some-long-random-token ./session-vault-server
 | `SESSION_VAULT_TOKEN_HASHES` | — | **Preferred** multi-user auth: comma-separated `sha256hex:user` pairs — no plaintext tokens on the server |
 | `SESSION_VAULT_TOKENS` | — | Convenience multi-user auth: comma-separated plaintext `token:user` pairs (hashed in memory at startup) |
 | `SESSION_VAULT_TOKEN` | — | Single-user shortcut: one plaintext token mapped to user `default` |
+| `SESSION_VAULT_LOG_LEVEL` | `info` | Log level: `debug` `info` `warn` `error` |
+| `SESSION_VAULT_LOG_DIR` | — | Directory for the daily log files |
+| `SESSION_VAULT_LOG_FILE` | — | Log to this file instead of the daily log |
 
 At least one token must be configured. Each token maps to a user, and every
 user only ever sees their own sessions. Tokens are compared by SHA-256 hash;
@@ -102,6 +105,15 @@ data/
 ```
 
 Plain files on disk — back it up like any directory.
+
+## Logging
+
+The server logs structured text (slog) to stdout and to a daily file named
+`YYYY-MM-DD.log` in the log directory (created 0700, files 0600):
+`$SESSION_VAULT_LOG_DIR`, or `$XDG_STATE_HOME/session-vault/logs`, or
+`~/.local/state/session-vault/logs`. Log files older than 21 days are
+deleted on startup. If the log file cannot be opened, the server logs to
+stdout only and keeps running.
 
 ## Security notes
 

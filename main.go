@@ -15,6 +15,12 @@
 //	                            (convenience; hashed in memory at startup)
 //	SESSION_VAULT_TOKEN         single plaintext token mapped to user "default"
 //
+// Logging (slog, structured text on stdout plus a daily file):
+//
+//	SESSION_VAULT_LOG_LEVEL     debug|info|warn|error (default info)
+//	SESSION_VAULT_LOG_DIR       directory for the daily log files
+//	SESSION_VAULT_LOG_FILE      log to this file instead of the daily log
+//
 // Compute a token hash with: printf '%s' "$TOKEN" | sha256sum
 //
 // Storage layout: <data>/<user>/<project>/<session-id>.data (the blob,
@@ -29,7 +35,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -75,21 +81,28 @@ type server struct {
 var version = "dev"
 
 func main() {
+	initLogger()
 	addr := envOr("SESSION_VAULT_ADDR", ":8080")
 	dataDir := envOr("SESSION_VAULT_DATA", "data")
 
 	tokens, err := loadTokens()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("loading tokens", "error", err)
+		os.Exit(1)
 	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		log.Fatal(err)
+		slog.Error("creating data dir", "path", dataDir, "error", err)
+		os.Exit(1)
 	}
 
 	s := &server{dataDir: dataDir, tokens: tokens, maxUpload: maxUploadBytes}
 
-	log.Printf("session-vault-server %s listening on %s (data dir: %s, %d token(s))", version, addr, dataDir, len(tokens))
-	log.Fatal(http.ListenAndServe(addr, routes(s)))
+	slog.Info("session-vault-server listening",
+		"version", version, "addr", addr, "data_dir", dataDir, "tokens", len(tokens))
+	if err := http.ListenAndServe(addr, routes(s)); err != nil {
+		slog.Error("server", "error", err)
+		os.Exit(1)
+	}
 }
 
 // routes wires the HTTP endpoints; split out from main so tests can run
@@ -170,15 +183,38 @@ func loadTokens() (map[string]string, error) {
 	return tokens, nil
 }
 
+// statusRecorder captures the response status code so the auth middleware
+// can log it alongside the request.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
 func (s *server) auth(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		user := s.tokens[hashToken(strings.TrimSpace(token))]
 		if !ok || user == "" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			http.Error(rw, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next(w, r, user)
+		defer func() {
+			slog.Info("request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"user", user,
+				"status", rw.status,
+				"duration", time.Since(start),
+			)
+		}()
+		next(rw, r, user)
 	}
 }
 
@@ -373,11 +409,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("writing response: %v", err)
+		slog.Error("writing response", "error", err)
 	}
 }
 
 func internalError(w http.ResponseWriter, err error) {
-	log.Printf("internal error: %v", err)
+	slog.Error("internal error", "error", err)
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }
