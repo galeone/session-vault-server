@@ -1,0 +1,59 @@
+# Builds the release binaries for every supported platform and attaches them
+# to the GitHub release that release-please created for this tag.
+name: release-artifacts
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64 }
+          - { os: linux, arch: arm64 }
+          - { os: darwin, arch: amd64 }
+          - { os: darwin, arch: arm64 }
+          - { os: windows, arch: amd64 }
+          - { os: windows, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          ext=""
+          [ "${{ matrix.os }}" = "windows" ] && ext=".exe"
+          version="${GITHUB_REF_NAME#v}"
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
+            go build -trimpath \
+            -ldflags "-s -w -X main.version=$version" \
+            -o "dist/session-vault-server_${{ matrix.os }}_${{ matrix.arch }}$ext" .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: artifact-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist/
+          merge-multiple: true
+      - name: Checksums
+        run: (cd dist && find . -type f ! -name checksums.txt -exec sha256sum {} + | sort > checksums.txt)
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: false

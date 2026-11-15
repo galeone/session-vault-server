@@ -26,6 +26,9 @@ SESSION_VAULT_TOKEN=some-long-random-token ./session-vault-server
 | `SESSION_VAULT_TOKEN_HASHES` | — | **Preferred** multi-user auth: comma-separated `sha256hex:user` pairs — no plaintext tokens on the server |
 | `SESSION_VAULT_TOKENS` | — | Convenience multi-user auth: comma-separated plaintext `token:user` pairs (hashed in memory at startup) |
 | `SESSION_VAULT_TOKEN` | — | Single-user shortcut: one plaintext token mapped to user `default` |
+| `SESSION_VAULT_LOG_LEVEL` | `info` | Log level: `debug` `info` `warn` `error` |
+| `SESSION_VAULT_LOG_DIR` | — | Directory for the daily log files |
+| `SESSION_VAULT_LOG_FILE` | — | Log to this file instead of the daily log |
 
 At least one token must be configured. Each token maps to a user, and every
 user only ever sees their own sessions. Tokens are compared by SHA-256 hash;
@@ -103,6 +106,15 @@ data/
 
 Plain files on disk — back it up like any directory.
 
+## Logging
+
+The server logs structured text (slog) to stdout and to a daily file named
+`YYYY-MM-DD.log` in the log directory (created 0700, files 0600):
+`$SESSION_VAULT_LOG_DIR`, or `$XDG_STATE_HOME/session-vault/logs`, or
+`~/.local/state/session-vault/logs`. Log files older than 21 days are
+deleted on startup. If the log file cannot be opened, the server logs to
+stdout only and keeps running.
+
 ## Security notes
 
 - **Encryption at rest is the client's job**: with the plugin's age key
@@ -118,3 +130,20 @@ Plain files on disk — back it up like any directory.
   restarting.
 - Uploads are capped at 256 MiB per request, both for the compressed body and for the decompressed size (defense against gzip bombs).
 - Session files and their metadata are written with mode 0600 inside a 0700 directory.
+
+## CI & releases
+
+- **CI** (`.github/workflows/ci.yml`) runs on every push to `main` and every
+  PR: `go test` and `golangci-lint` (config in `.golangci.yaml`).
+- **Releases** are cut by [release-please](.github/workflows/release-please.yml)
+  on push to `main`, following [Conventional Commits](https://www.conventionalcommits.org):
+  - `fix: ...` → **patch** (0.1.0 → 0.1.1)
+  - `feat: ...` → **minor** (0.1.0 → 0.2.0)
+  - `feat!:` / `BREAKING CHANGE:` footer → **major** (0.1.0 → 1.0.0)
+  - other types (`chore`, `docs`, `ci`, ...) only land in the next changelog and don't bump the version
+- When a release is cut, release-please creates the `vX.Y.Z` tag, `CHANGELOG.md`
+  and an empty GitHub release. That tag triggers
+  [release-artifacts](.github/workflows/release-artifacts.yml), which cross-compiles
+  the static binaries for linux/darwin/windows × amd64/arm64 (with the version
+  injected into `--version` via `-ldflags -X main.version`) and attaches them,
+  along with `checksums.txt`, to the release.
