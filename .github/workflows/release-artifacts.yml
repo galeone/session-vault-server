@@ -1,17 +1,55 @@
 # Builds the release binaries for every supported platform and attaches them
 # to the GitHub release that release-please created for this tag.
+#
+# Trigger: this runs when the release-please workflow COMPLETES, not on
+# `push: tags`. release-please creates the tag (and the release) using
+# GITHUB_TOKEN, and GitHub does not run workflows at all for push events
+# triggered by GITHUB_TOKEN (the only exceptions are workflow_dispatch and
+# repository_dispatch). By the time a release-please run finishes
+# successfully, the tag exists, so we detect it on the head commit of that
+# run. workflow_dispatch (with an explicit tag) is available to backfill
+# assets on an already-published release.
 name: release-artifacts
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_run:
+    workflows: [release-please]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g. v1.0.0)"
+        required: false
 
 permissions:
   contents: write
 
 jobs:
+  detect:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.find.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'workflow_run'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - id: find
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            # release-please tags the head commit of the run that cut the release.
+            tag=$(git describe --tags --exact-match HEAD 2>/dev/null || true)
+          fi
+          echo "release tag: ${tag:-<none>}"
+          echo "tag=${tag:-}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: detect
+    if: needs.detect.outputs.tag != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -25,6 +63,8 @@ jobs:
           - { os: windows, arch: arm64 }
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.detect.outputs.tag }}
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -32,7 +72,8 @@ jobs:
         run: |
           ext=""
           [ "${{ matrix.os }}" = "windows" ] && ext=".exe"
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ needs.detect.outputs.tag }}"
+          version="${version#v}"
           CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
             go build -trimpath \
             -ldflags "-s -w -X main.version=$version" \
@@ -43,10 +84,10 @@ jobs:
           path: dist/
 
   release:
-    needs: build
+    needs: [detect, build]
+    if: needs.detect.outputs.tag != ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: dist/
@@ -55,5 +96,6 @@ jobs:
         run: (cd dist && find . -type f ! -name checksums.txt -exec sha256sum {} + | sort > checksums.txt)
       - uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ needs.detect.outputs.tag }}
           files: dist/*
           generate_release_notes: false
