@@ -1,0 +1,31 @@
+# Local pre-commit hooks for session-vault-server.
+#
+# Install once per clone:  pre-commit install
+# Run manually on everything:  pre-commit run --all-files
+#
+# Tool versions are pinned to match CI (golangci-lint v2.15.0, actionlint v1.7.12).
+repos:
+  # Go linting + formatting (golangci-lint is built from source by pre-commit,
+  # matching the CI version; config is picked up from .golangci.yaml).
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v2.15.0
+    hooks:
+      - id: golangci-lint      # lint changed Go files, auto-fixing what it can
+      - id: golangci-lint-fmt  # gofmt + import ordering
+
+  # GitHub Actions workflow linting (same tool as the ci actionlint job).
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # Generic file hygiene.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace

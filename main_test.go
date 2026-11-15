@@ -210,9 +210,9 @@ func TestUploadKeepsNameOnUnlabeledResave(t *testing.T) {
 func TestUploadInvalidHeaders(t *testing.T) {
 	ts, _ := testServer(t, map[string]string{"tok": "default"}, maxUploadBytes)
 	for _, headers := range []map[string]string{
-		{"X-Project": "proj"},            // missing session id
-		{"X-Session-Id": "abc"},          // missing project
-		{"X-Session-Id": "a/b", "X-Project": "proj"},  // path separator
+		{"X-Project": "proj"},                                               // missing session id
+		{"X-Session-Id": "abc"},                                             // missing project
+		{"X-Session-Id": "a/b", "X-Project": "proj"},                        // path separator
 		{"X-Session-Id": "abc", "X-Project": "proj", "X-Name": "bad name!"}, // bad name
 	} {
 		resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", []byte(`x`), headers)

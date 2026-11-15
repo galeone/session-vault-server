@@ -93,7 +93,10 @@ jobs:
           path: dist/
           merge-multiple: true
       - name: Checksums
-        run: (cd dist && find . -type f ! -name checksums.txt -exec sha256sum {} + | sort > checksums.txt)
+        run: |
+          tmp=$(mktemp)
+          (cd dist && find . -type f ! -name checksums.txt -exec sha256sum {} +) | sort > "$tmp"
+          mv "$tmp" dist/checksums.txt
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.detect.outputs.tag }}
