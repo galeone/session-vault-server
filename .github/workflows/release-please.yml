@@ -1,0 +1,32 @@
+# Cuts a new release from conventional commits on main.
+#
+# Versioning rule (release-please / Conventional Commits):
+#   fix:  ...  ->  patch   (0.1.0 -> 0.1.1)
+#   feat:  ...  ->  minor   (0.1.0 -> 0.2.0)
+#   BREAKING CHANGE footer or `!` (e.g. `feat!:`)  ->  major
+#
+# Any other commit type (chore/docs/ci/...) does not bump the version on its
+# own; it is folded into the next release's changelog.
+#
+# On release it creates a tag (vX.Y.Z), a CHANGELOG.md and an (empty) GitHub
+# release. The binaries are attached by the release-artifacts workflow, which
+# is triggered by that tag.
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release-type: go
+          make-asset-releases: true

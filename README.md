@@ -118,3 +118,20 @@ Plain files on disk — back it up like any directory.
   restarting.
 - Uploads are capped at 256 MiB per request, both for the compressed body and for the decompressed size (defense against gzip bombs).
 - Session files and their metadata are written with mode 0600 inside a 0700 directory.
+
+## CI & releases
+
+- **CI** (`.github/workflows/ci.yml`) runs on every push to `main` and every
+  PR: `go test` and `golangci-lint` (config in `.golangci.yaml`).
+- **Releases** are cut by [release-please](.github/workflows/release-please.yml)
+  on push to `main`, following [Conventional Commits](https://www.conventionalcommits.org):
+  - `fix: ...` → **patch** (0.1.0 → 0.1.1)
+  - `feat: ...` → **minor** (0.1.0 → 0.2.0)
+  - `feat!:` / `BREAKING CHANGE:` footer → **major** (0.1.0 → 1.0.0)
+  - other types (`chore`, `docs`, `ci`, ...) only land in the next changelog and don't bump the version
+- When a release is cut, release-please creates the `vX.Y.Z` tag, `CHANGELOG.md`
+  and an empty GitHub release. That tag triggers
+  [release-artifacts](.github/workflows/release-artifacts.yml), which cross-compiles
+  the static binaries for linux/darwin/windows × amd64/arm64 (with the version
+  injected into `--version` via `-ldflags -X main.version`) and attaches them,
+  along with `checksums.txt`, to the release.

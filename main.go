@@ -66,7 +66,13 @@ type server struct {
 	dataDir string
 	tokens  map[string]string // sha256(token) hex -> user
 	mu      sync.Mutex        // serializes blob+meta commits (fixes interleaved re-uploads)
+	// maxUpload bounds a single (possibly gzip-compressed) upload body, and
+	// the decompressed size when the body is gzip. Configurable so tests can
+	// use a small cap.
+	maxUpload int64
 }
+
+var version = "dev"
 
 func main() {
 	addr := envOr("SESSION_VAULT_ADDR", ":8080")
@@ -80,19 +86,26 @@ func main() {
 		log.Fatal(err)
 	}
 
-	s := &server{dataDir: dataDir, tokens: tokens}
+	s := &server{dataDir: dataDir, tokens: tokens, maxUpload: maxUploadBytes}
 
+	log.Printf("session-vault-server %s listening on %s (data dir: %s, %d token(s))", version, addr, dataDir, len(tokens))
+	log.Fatal(http.ListenAndServe(addr, routes(s)))
+}
+
+// routes wires the HTTP endpoints; split out from main so tests can run
+// them through httptest.
+func routes(s *server) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		io.WriteString(w, "ok\n")
+		if _, err := io.WriteString(w, "ok\n"); err != nil {
+			return
+		}
 	})
 	mux.HandleFunc("POST /api/v1/sessions", s.auth(s.upload))
 	mux.HandleFunc("GET /api/v1/sessions", s.auth(s.list))
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.auth(s.download))
 	mux.HandleFunc("GET /api/v1/sessions/{id}/meta", s.auth(s.meta))
-
-	log.Printf("session-vault-server listening on %s (data dir: %s, %d token(s))", addr, dataDir, len(tokens))
-	log.Fatal(http.ListenAndServe(addr, mux))
+	return mux
 }
 
 func envOr(key, fallback string) string {
@@ -188,15 +201,15 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user string) {
 		}
 	}
 
-	body := io.Reader(http.MaxBytesReader(w, r.Body, maxUploadBytes))
+	body := io.Reader(http.MaxBytesReader(w, r.Body, s.maxUpload))
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(body)
 		if err != nil {
 			http.Error(w, "invalid gzip body", http.StatusBadRequest)
 			return
 		}
-		defer gz.Close()
-		body = &limitedReader{r: gz, cap: maxUploadBytes}
+		defer func() { _ = gz.Close() }()
+		body = &limitedReader{r: gz, cap: s.maxUpload}
 	}
 
 	// 0700: the directory may hold plaintext transcripts.
@@ -213,11 +226,11 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user string) {
 		internalError(w, err)
 		return
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 
 	size, err := io.Copy(tmp, body)
 	if err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		http.Error(w, "upload failed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -335,9 +348,9 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	name := tmp.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
