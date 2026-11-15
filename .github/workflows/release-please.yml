@@ -29,4 +29,3 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           release-type: go
-          make-asset-releases: true
