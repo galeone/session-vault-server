@@ -27,7 +27,9 @@ build() {
 
 package() {
 	install -Dm755 "$srcdir/$pkgname" "$pkgdir/usr/bin/$pkgname"
+	# /usr/lib (not /lib): on modern Arch /lib is a symlink owned by the
+	# 'filesystem' package and pacman rejects packages that own it.
 	install -Dm644 "$srcdir/$pkgname-$pkgver/misc/$pkgname.service" \
-		"$pkgdir/lib/systemd/system/$pkgname.service"
+		"$pkgdir/usr/lib/systemd/system/$pkgname.service"
 	install -d -m700 "$pkgdir/etc/$pkgname"
 }

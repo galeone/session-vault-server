@@ -55,8 +55,8 @@ arch: dist
 
 install-arch:
 	# makepkg ships with pacman itself; only the Go toolchain is missing by
-	# default.
-	sudo pacman -S --needed --noconfirm go
+	# default, and only install it (with sudo) if it actually is.
+	@command -v go >/dev/null 2>&1 || sudo pacman -S --noconfirm go
 	$(MAKE) arch
 	sudo pacman -U --noconfirm $(ARCHDIR)/$(SVS_NAME)-$(VERSION)-1-*.pkg.tar.*
 
@@ -74,7 +74,8 @@ deb: dist
 	dpkg-buildpackage -us -uc -b
 
 install-deb:
-	sudo apt-get install -y --no-install-recommends golang-go debhelper dpkg-dev
+	@command -v go >/dev/null 2>&1 && command -v dpkg-buildpackage >/dev/null 2>&1 \
+		|| sudo apt-get install -y --no-install-recommends golang-go debhelper dpkg-dev
 	$(MAKE) deb
 	sudo dpkg -i $(DEBS)
 
@@ -88,7 +89,8 @@ rpm: dist
 		packaging/rpm/$(SVS_NAME).spec
 
 install-rpm:
-	sudo dnf install -y rpm-build golang systemd-rpm-macros
+	@command -v go >/dev/null 2>&1 && command -v rpmbuild >/dev/null 2>&1 \
+		|| sudo dnf install -y rpm-build golang systemd-rpm-macros
 	sudo dnf builddep -y packaging/rpm/$(SVS_NAME).spec
 	$(MAKE) rpm
 	sudo dnf install -y $(RPMS)
