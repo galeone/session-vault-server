@@ -17,12 +17,12 @@
 SVS_NAME := session-vault-server
 VERSION  ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 DISTDIR  ?= build
-TARBALL  := $(abspath $(DISTDIR))/$SVS_NAME-$(VERSION).tar.xz
+TARBALL  := $(abspath $(DISTDIR))/$(SVS_NAME)-$(VERSION).tar.xz
 ARCHDIR  := $(abspath $(DISTDIR))/arch
 DEBROOT  := $(abspath $(DISTDIR))/deb
 RPMDIR   := $(abspath $(DISTDIR))/rpm
-DEBS     := $(DEBROOT)/$SVS_NAME_$(VERSION)_*.deb
-RPMS     := $(RPMDIR)/RPMS/*/$SVS_NAME-*.rpm
+DEBS     := $(DEBROOT)/$(SVS_NAME)_$(VERSION)_*.deb
+RPMS     := $(RPMDIR)/RPMS/*/$(SVS_NAME)-*.rpm
 MAINTAINER ?= Paolo Galeone <nessuno@nerdz.eu>
 
 .PHONY: all dist arch deb rpm version install \
@@ -40,9 +40,9 @@ dist:
 		echo "no git tag found; tag the release (vX.Y.Z) or pass VERSION=x.y.z"; \
 		exit 1; }
 	mkdir -p $(DISTDIR)
-	git archive --format=tar --prefix=$SVS_NAME-$(VERSION)/ \
-		--output=$(DISTDIR)/$SVS_NAME-$(VERSION).tar HEAD -- $$(git ls-files)
-	xz -9 -f $(DISTDIR)/$SVS_NAME-$(VERSION).tar
+	git archive --format=tar --prefix=$(SVS_NAME)-$(VERSION)/ \
+		--output=$(DISTDIR)/$(SVS_NAME)-$(VERSION).tar HEAD -- $$(git ls-files)
+	xz -9 -f $(DISTDIR)/$(SVS_NAME)-$(VERSION).tar
 
 # --- Arch Linux (makepkg) ------------------------------------------------
 
@@ -58,7 +58,7 @@ install-arch:
 	# default.
 	sudo pacman -S --needed --noconfirm go
 	$(MAKE) arch
-	sudo pacman -U --noconfirm $(ARCHDIR)/$SVS_NAME-$(VERSION)-1-*.pkg.tar.*
+	sudo pacman -U --noconfirm $(ARCHDIR)/$(SVS_NAME)-$(VERSION)-1-*.pkg.tar.*
 
 # --- Debian / Ubuntu (dpkg) ---------------------------------------------
 
@@ -66,11 +66,11 @@ deb: dist
 	rm -rf $(DEBROOT)
 	mkdir -p $(DEBROOT)
 	tar -xf $(TARBALL) -C $(DEBROOT)
-	mv $(DEBROOT)/$SVS_NAME-$(VERSION) $(DEBROOT)/$SVS_NAME_$(VERSION)
-	cp -r packaging/debian $(DEBROOT)/$SVS_NAME_$(VERSION)/debian
+	mv $(DEBROOT)/$(SVS_NAME)-$(VERSION) $(DEBROOT)/$(SVS_NAME)_$(VERSION)
+	cp -r packaging/debian $(DEBROOT)/$(SVS_NAME)_$(VERSION)/debian
 	printf '%s (%s) unstable; urgency=low\n\n  * Built from git tag v%s.\n\n -- %s  %s\n' \
 		'$(SVS_NAME)' '$(VERSION)' '$(VERSION)' '$(MAINTAINER)' '$(shell LC_ALL=C date -R)' \
-		> $(DEBROOT)/$SVS_NAME_$(VERSION)/debian/changelog
+		> $(DEBROOT)/$(SVS_NAME)_$(VERSION)/debian/changelog
 	dpkg-buildpackage -us -uc -b
 
 install-deb:
@@ -85,11 +85,11 @@ rpm: dist
 	mkdir -p $(RPMDIR)/SOURCES
 	cp $(TARBALL) $(RPMDIR)/SOURCES/
 	rpmbuild -ba --define "_topdir $(RPMDIR)" --define "version $(VERSION)" \
-		packaging/rpm/$SVS_NAME.spec
+		packaging/rpm/$(SVS_NAME).spec
 
 install-rpm:
 	sudo dnf install -y rpm-build golang systemd-rpm-macros
-	sudo dnf builddep -y packaging/rpm/$SVS_NAME.spec
+	sudo dnf builddep -y packaging/rpm/$(SVS_NAME).spec
 	$(MAKE) rpm
 	sudo dnf install -y $(RPMS)
 
