@@ -17,6 +17,43 @@ go build -o session-vault-server .
 SESSION_VAULT_TOKEN=some-long-random-token ./session-vault-server
 ```
 
+## Running under systemd
+
+A ready-to-install template unit lives in
+[misc/session-vault@.service](misc/session-vault@.service). The instance name
+(e.g. `session-vault@default`) must match the user configured for that token.
+
+```sh
+# one-off setup
+sudo useradd --system --home /var/lib/session-vault --shell /usr/sbin/nologin session-vault
+sudo install -m 0755 -o root -g root session-vault-server /usr/local/bin/
+sudo install -d -m 0750 -o root -g session-vault /etc/session-vault
+
+# per-instance environment (instance "default")
+TOKEN=$(openssl rand -hex 32)                  # keep this: it goes to the client
+HASH=$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)
+sudo tee /etc/session-vault/default.env >/dev/null <<EOF
+SESSION_VAULT_TOKEN_HASHES=$HASH:default
+EOF
+sudo chown root:session-vault /etc/session-vault/default.env
+sudo chmod 0640 /etc/session-vault/default.env
+
+# install and start the service
+sudo install -m 0644 -o root -g root misc/session-vault@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now session-vault@default
+```
+
+- Data: `/var/lib/session-vault/<instance>/` (0700, owned by `session-vault`),
+  logs there under `logs/` and in the journal:
+  `journalctl -u session-vault@default -f`.
+- Liveness: `curl http://localhost:8080/healthz`.
+- Additional instances (e.g. `session-vault@work`): add another
+  `/etc/session-vault/<instance>.env` with its own
+  `SESSION_VAULT_TOKEN_HASHES=<hash>:<instance>` and a different
+  `SESSION_VAULT_ADDR` (e.g. `:8081`), then `systemctl enable --now
+  session-vault@work`.
+
 ## Configuration
 
 | Env var | Default | Meaning |

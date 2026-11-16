@@ -1,0 +1,71 @@
+# session-vault@.service — systemd template unit for session-vault-server
+#
+# Install and start (see README.md, "Running under systemd"):
+#
+#   sudo useradd --system --home /var/lib/session-vault --shell /usr/sbin/nologin session-vault
+#   sudo install -m 0755 -o root -g root session-vault-server /usr/local/bin/
+#   sudo install -d -m 0750 -o root -g session-vault /etc/session-vault
+#
+#   # per-instance environment, e.g. for instance "default":
+#   TOKEN=$(openssl rand -hex 32)
+#   HASH=$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)
+#   sudo tee /etc/session-vault/default.env >/dev/null <<EOF
+#   SESSION_VAULT_TOKEN_HASHES=$HASH:default
+#   EOF
+#   sudo chmod 0640 /etc/session-vault/default.env
+#   sudo chown root:session-vault /etc/session-vault/default.env
+#
+#   sudo install -m 0644 -o root -g root misc/session-vault@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now session-vault@default
+#
+# Notes:
+# - The instance name (text after "@") must match the user configured in
+#   SESSION_VAULT_TOKENS / SESSION_VAULT_TOKEN_HASHES.
+# - Per-instance data lives in /var/lib/session-vault/<instance>/
+#   (StateDirectory), logs in /var/lib/session-vault/<instance>/logs
+#   in addition to the journal (journalctl -u session-vault@<instance>).
+# - Run multiple instances by starting another unit (e.g. session-vault@work)
+#   with its own env file and a different SESSION_VAULT_ADDR, e.g. :8081.
+
+[Unit]
+Description=session-vault-server (instance %i)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=session-vault
+Group=session-vault
+
+# Optional per-instance config: tokens, addr, log level, ...
+EnvironmentFile=-/etc/session-vault/%i.env
+Environment=SESSION_VAULT_DATA=%S/
+Environment=SESSION_VAULT_LOG_DIR=%S/logs
+
+ExecStart=/usr/local/bin/session-vault-server
+
+Restart=on-failure
+RestartSec=2
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
