@@ -1,0 +1,17 @@
+Source: session-vault-server
+Section: utils
+Priority: optional
+Maintainer: Paolo Galeone <nessuno@nerdz.eu>
+Build-Depends: debhelper-compat (= 13), golang-go
+Standards-Version: 4.6.2
+Homepage: https://github.com/galeone/session-vault-server
+
+Package: session-vault-server
+Architecture: any
+Depends: ${misc:Depends}
+Description: self-hosted store for Claude Code session transcripts
+ session-vault-server is a small, self-hosted store for Claude Code
+ session transcripts. Transcripts are treated as opaque blobs and are
+ expected to be uploaded end-to-end encrypted (age), so the server never
+ parses or inspects them. It ships a hardened systemd unit that runs the
+ server as an ephemeral dedicated user.

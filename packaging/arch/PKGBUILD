@@ -1,0 +1,33 @@
+# Maintainer: Paolo Galeone <nessuno@nerdz.eu>
+#
+# This file is a template: the top-level Makefile (make arch / make
+# install-arch) stamps pkgver from the git tag and places the matching
+# source tarball next to the generated PKGBUILD before running makepkg.
+# The pkgver below is a placeholder and the sha256sums are skipped because
+# the tarball is generated locally from the working tree.
+
+pkgname=session-vault-server
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Self-hosted store for Claude Code session transcripts"
+arch=(x86_64 aarch64)
+url="https://github.com/galeone/session-vault-server"
+license=(MIT)
+depends=(glibc)
+makedepends=(go)
+source=("$pkgname-$pkgver.tar.xz")
+sha256sums=(SKIP)
+
+build() {
+	cd "$srcdir/$pkgname-$pkgver"
+	CGO_ENABLED=0 go build -trimpath \
+		-ldflags "-s -w -X main.version=$pkgver" \
+		-o "$srcdir/$pkgname" .
+}
+
+package() {
+	install -Dm755 "$srcdir/$pkgname" "$pkgdir/usr/bin/$pkgname"
+	install -Dm644 "$srcdir/$pkgname-$pkgver/misc/$pkgname.service" \
+		"$pkgdir/lib/systemd/system/$pkgname.service"
+	install -d -m700 "$pkgdir/etc/$pkgname"
+}

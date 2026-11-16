@@ -1,0 +1,58 @@
+# session-vault-server.service — systemd unit for session-vault-server
+#
+# The server runs as the dedicated ephemeral user "session-vault"
+# (DynamicUser=), so it never runs as root or as a login user and no
+# persistent system account has to be created.
+#
+# The easiest way to install this (binary + unit + /etc/session-vault) is
+# the native distro package: run `make install` from the repository root
+# (see README.md, "Running under systemd").
+#
+# Notes:
+# - The server is multi-user: configure several tokens in the env file
+#   (SESSION_VAULT_TOKENS / SESSION_VAULT_TOKEN_HASHES) and each user only
+#   ever sees their own sessions (data/<user>/).
+# - Data lives in /var/lib/session-vault/ (StateDirectory, owned by the
+#   dynamic user), logs in /var/lib/session-vault/logs/ in addition to the
+#   journal: journalctl -u session-vault-server
+
+[Unit]
+Description=session-vault-server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+DynamicUser=session-vault
+
+# Server configuration: tokens, addr, log level, ...
+EnvironmentFile=-/etc/session-vault/session-vault.env
+Environment=SESSION_VAULT_DATA=%S/
+Environment=SESSION_VAULT_LOG_DIR=%S/logs
+
+ExecStart=/usr/bin/session-vault-server
+
+Restart=on-failure
+RestartSec=2
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

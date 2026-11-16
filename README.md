@@ -17,42 +17,56 @@ go build -o session-vault-server .
 SESSION_VAULT_TOKEN=some-long-random-token ./session-vault-server
 ```
 
-## Running under systemd
+## Running under systemd / distro packages
 
-A ready-to-install unit lives in
-[misc/session-vault.service](misc/session-vault.service). It hardcodes
-`User=session-vault`, so the server never runs as root or as a login user —
-and it refuses to start until that system user exists.
+The easiest way to run the server as a system service is the native distro
+package, built from the repository with the [Makefile](Makefile) (in the
+style of [gpu-unlock](https://github.com/Zagitta/gpu-unlock)):
 
 ```sh
-# one-off setup
-sudo useradd --system --home /var/lib/session-vault --shell /usr/sbin/nologin session-vault
-sudo install -m 0755 -o root -g root session-vault-server /usr/local/bin/
-sudo install -d -m 0750 -o root -g session-vault /etc/session-vault
+make install            # detect the distro from /etc/os-release and install
 
-# server environment: tokens, addr, log level, ...
+# or explicitly:
+make install-arch       # Arch:        makepkg + pacman -U
+make install-deb        # Debian/Ubuntu: dpkg-buildpackage + dpkg -i
+make install-rpm        # Fedora/RHEL:   rpmbuild + dnf install
+```
+
+`make arch` / `make deb` / `make rpm` build the package into `build/`
+without installing it, and `make dist` produces the versioned source
+tarball. The package version is the latest release-please tag (`vX.Y.Z`);
+override with `make VERSION=x.y.z` on an untagged tree.
+
+The package installs:
+
+- `/usr/bin/session-vault-server`
+- the hardened unit [misc/session-vault-server.service](misc/session-vault-server.service)
+  (enabled on install) — it runs the server as the dedicated ephemeral user
+  `session-vault` (`DynamicUser=`), so it never runs as root or a login user
+- `/etc/session-vault/` (0700) for the service environment
+
+Before the first start, set the tokens:
+
+```sh
 TOKEN=$(openssl rand -hex 32)                  # keep this: it goes to the client
 HASH=$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)
 sudo tee /etc/session-vault/session-vault.env >/dev/null <<EOF
 SESSION_VAULT_TOKEN_HASHES=$HASH:default
 EOF
-sudo chown root:session-vault /etc/session-vault/session-vault.env
-sudo chmod 0640 /etc/session-vault/session-vault.env
-
-# install and start the service
-sudo install -m 0644 -o root -g root misc/session-vault.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now session-vault
+sudo chmod 0600 /etc/session-vault/session-vault.env
+sudo systemctl restart session-vault
 ```
 
-- Data: `/var/lib/session-vault/` (0700, owned by `session-vault`),
-  logs there under `logs/` and in the journal:
-  `journalctl -u session-vault -f`.
+- Data: `/var/lib/session-vault/` (owned by the dynamic user), logs there
+  under `logs/` and in the journal: `journalctl -u session-vault-server -f`.
 - Liveness: `curl http://localhost:8080/healthz`.
 - The server is multi-user: add further tokens to
   `/etc/session-vault/session-vault.env` (`SESSION_VAULT_TOKENS` /
   `SESSION_VAULT_TOKEN_HASHES`) and restart — each user only ever sees their
   own sessions.
+
+Packaging sources live in `packaging/` (`arch/PKGBUILD`, `debian/`,
+`rpm/*.spec`) and are the starting point for distro repository submissions.
 
 ## Configuration
 
