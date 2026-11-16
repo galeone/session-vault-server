@@ -54,7 +54,9 @@ arch: dist
 	cd $(ARCHDIR) && makepkg -f
 
 install-arch:
-	sudo pacman -S --needed --noconfirm makepkg go
+	# makepkg ships with pacman itself; only the Go toolchain is missing by
+	# default.
+	sudo pacman -S --needed --noconfirm go
 	$(MAKE) arch
 	sudo pacman -U --noconfirm $(ARCHDIR)/$SVS_NAME-$(VERSION)-1-*.pkg.tar.*
 
