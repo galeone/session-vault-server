@@ -54,7 +54,7 @@ sudo tee /etc/session-vault/session-vault.env >/dev/null <<EOF
 SESSION_VAULT_TOKEN_HASHES=$HASH:default
 EOF
 sudo chmod 0600 /etc/session-vault/session-vault.env
-sudo systemctl restart session-vault
+sudo systemctl restart session-vault-server
 ```
 
 - Data: `/var/lib/session-vault/` (owned by the dynamic user), logs there
@@ -64,6 +64,49 @@ sudo systemctl restart session-vault
   `/etc/session-vault/session-vault.env` (`SESSION_VAULT_TOKENS` /
   `SESSION_VAULT_TOKEN_HASHES`) and restart — each user only ever sees their
   own sessions.
+
+### Overriding the port or data directory
+
+Both are plain env vars — the unit just ships sane defaults. The
+`EnvironmentFile=` is read first, the unit's own `Environment=` lines next,
+and **drop-ins last**, so an override has to live in a drop-in (or in the
+unit file itself). Use `systemctl edit`, which opens a drop-in at
+`/etc/systemd/system/session-vault-server.service.d/override.conf`:
+
+Port (e.g. listen on 9090):
+
+```sh
+sudo systemctl edit session-vault-server
+```
+
+```ini
+[Service]
+Environment=SESSION_VAULT_ADDR=:9090
+```
+
+Data directory (e.g. `/var/lib/my-vault`):
+
+```sh
+sudo systemctl edit session-vault-server
+```
+
+```ini
+[Service]
+Environment=SESSION_VAULT_DATA=/var/lib/my-vault
+Environment=SESSION_VAULT_LOG_DIR=/var/lib/my-vault/logs
+StateDirectory=my-vault
+```
+
+The extra `StateDirectory=` line is what makes a custom path work: with
+`ProtectSystem=strict` the whole filesystem is read-only for the service
+except its state directories, and `StateDirectory=` is what creates the
+directory and chowns it to the ephemeral `session-vault` user on every
+boot. Without it the server would start and immediately fail to write.
+
+Then `sudo systemctl restart session-vault-server` (no `daemon-reload`
+needed — `systemctl edit` reloads the daemon for you). Verify with
+`systemctl show session-vault-server -p Environment` and
+`curl http://localhost:<port>/healthz`.
 
 Packaging sources live in `packaging/` (`arch/PKGBUILD`, `debian/`,
 `rpm/*.spec`) and are the starting point for distro repository submissions.
