@@ -19,9 +19,10 @@ SESSION_VAULT_TOKEN=some-long-random-token ./session-vault-server
 
 ## Running under systemd
 
-A ready-to-install template unit lives in
-[misc/session-vault@.service](misc/session-vault@.service). The instance name
-(e.g. `session-vault@default`) must match the user configured for that token.
+A ready-to-install unit lives in
+[misc/session-vault.service](misc/session-vault.service). It hardcodes
+`User=session-vault`, so the server never runs as root or as a login user —
+and it refuses to start until that system user exists.
 
 ```sh
 # one-off setup
@@ -29,30 +30,29 @@ sudo useradd --system --home /var/lib/session-vault --shell /usr/sbin/nologin se
 sudo install -m 0755 -o root -g root session-vault-server /usr/local/bin/
 sudo install -d -m 0750 -o root -g session-vault /etc/session-vault
 
-# per-instance environment (instance "default")
+# server environment: tokens, addr, log level, ...
 TOKEN=$(openssl rand -hex 32)                  # keep this: it goes to the client
 HASH=$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)
-sudo tee /etc/session-vault/default.env >/dev/null <<EOF
+sudo tee /etc/session-vault/session-vault.env >/dev/null <<EOF
 SESSION_VAULT_TOKEN_HASHES=$HASH:default
 EOF
-sudo chown root:session-vault /etc/session-vault/default.env
-sudo chmod 0640 /etc/session-vault/default.env
+sudo chown root:session-vault /etc/session-vault/session-vault.env
+sudo chmod 0640 /etc/session-vault/session-vault.env
 
 # install and start the service
-sudo install -m 0644 -o root -g root misc/session-vault@.service /etc/systemd/system/
+sudo install -m 0644 -o root -g root misc/session-vault.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now session-vault@default
+sudo systemctl enable --now session-vault
 ```
 
-- Data: `/var/lib/session-vault/<instance>/` (0700, owned by `session-vault`),
+- Data: `/var/lib/session-vault/` (0700, owned by `session-vault`),
   logs there under `logs/` and in the journal:
-  `journalctl -u session-vault@default -f`.
+  `journalctl -u session-vault -f`.
 - Liveness: `curl http://localhost:8080/healthz`.
-- Additional instances (e.g. `session-vault@work`): add another
-  `/etc/session-vault/<instance>.env` with its own
-  `SESSION_VAULT_TOKEN_HASHES=<hash>:<instance>` and a different
-  `SESSION_VAULT_ADDR` (e.g. `:8081`), then `systemctl enable --now
-  session-vault@work`.
+- The server is multi-user: add further tokens to
+  `/etc/session-vault/session-vault.env` (`SESSION_VAULT_TOKENS` /
+  `SESSION_VAULT_TOKEN_HASHES`) and restart — each user only ever sees their
+  own sessions.
 
 ## Configuration
 
