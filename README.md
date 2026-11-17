@@ -34,8 +34,18 @@ make install-rpm        # Fedora/RHEL:   rpmbuild + dnf install
 
 `make arch` / `make deb` / `make rpm` build the package into `build/`
 without installing it, and `make dist` produces the versioned source
-tarball. The package version is the latest release-please tag (`vX.Y.Z`);
-override with `make VERSION=x.y.z` on an untagged tree.
+tarball. The package version is the newest release-please tag (`vX.Y.Z`)
+reachable from HEAD; override with `make VERSION=x.y.z` on an untagged
+tree.
+
+When upgrading, fetch the new tag first — a bare `git pull` does not fetch
+tags that point at commits it already has, and without the tag the Makefile
+silently rebuilds the previous version:
+
+```sh
+git fetch --tags
+sudo make install
+```
 
 The package installs:
 

@@ -15,14 +15,18 @@
 # SVS_NAME (not PKG): some toolchains export PKG in the environment, and
 # make gives environment/command-line variables precedence over the Makefile.
 SVS_NAME := session-vault-server
-VERSION  ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+# Highest vX.Y.Z tag reachable from HEAD (more forgiving than `git describe`
+# when older tags are still around locally). Note: a bare `git pull` does NOT
+# fetch tags pointing at commits it already has, so after pulling a new
+# release run `git fetch --tags` before building.
+VERSION  ?= $(shell git tag --list --merged HEAD 'v[0-9]*' 2>/dev/null | sed 's/^v//' | sort -V | tail -1)
 DISTDIR  ?= build
 TARBALL  := $(abspath $(DISTDIR))/$(SVS_NAME)-$(VERSION).tar.xz
 ARCHDIR  := $(abspath $(DISTDIR))/arch
 DEBROOT  := $(abspath $(DISTDIR))/deb
 RPMDIR   := $(abspath $(DISTDIR))/rpm
 DEBS     := $(DEBROOT)/$(SVS_NAME)_$(VERSION)_*.deb
-RPMS     := $(RPMDIR)/RPMS/*/$(SVS_NAME)-*.rpm
+RPMS     := $(RPMDIR)/RPMS/*/$(SVS_NAME)-$(VERSION)-*.rpm
 MAINTAINER ?= Paolo Galeone <nessuno@nerdz.eu>
 
 .PHONY: all dist arch deb rpm version install \
@@ -37,7 +41,8 @@ version:
 # native packages below.
 dist:
 	@test -n "$(VERSION)" || { \
-		echo "no git tag found; tag the release (vX.Y.Z) or pass VERSION=x.y.z"; \
+		echo "no git tag found locally; run 'git fetch --tags' after pulling," \
+			"or tag the release (vX.Y.Z), or pass VERSION=x.y.z"; \
 		exit 1; }
 	mkdir -p $(DISTDIR)
 	git archive --format=tar --prefix=$(SVS_NAME)-$(VERSION)/ \
