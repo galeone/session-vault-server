@@ -118,6 +118,7 @@ func routes(s *server) *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/sessions", s.auth(s.list))
 	mux.HandleFunc("GET /api/v1/sessions/{id}", s.auth(s.download))
 	mux.HandleFunc("GET /api/v1/sessions/{id}/meta", s.auth(s.meta))
+	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.auth(s.delete))
 	return mux
 }
 
@@ -350,6 +351,36 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request, user string) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	http.ServeFile(w, r, metaPath(path))
+}
+
+// delete removes a session (blob and meta) for the authenticated user.
+// The id is scoped to the user's own directory, so a token can only ever
+// delete its own sessions. If the same id exists under several projects,
+// all copies are removed.
+func (s *server) delete(w http.ResponseWriter, r *http.Request, user string) {
+	id := r.PathValue("id")
+	if !validName.MatchString(id) {
+		http.Error(w, "invalid session id", http.StatusBadRequest)
+		return
+	}
+	matches, err := filepath.Glob(filepath.Join(s.dataDir, user, "*", id+".data"))
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	if len(matches) == 0 {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	for _, m := range matches {
+		if err := os.Remove(m); err != nil {
+			internalError(w, err)
+			return
+		}
+		// The meta file may not exist; absence is not an error.
+		os.Remove(metaPath(m))
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(matches)})
 }
 
 // findSession resolves a session id to its blob path for the given user,
