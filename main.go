@@ -378,7 +378,10 @@ func (s *server) delete(w http.ResponseWriter, r *http.Request, user string) {
 			return
 		}
 		// The meta file may not exist; absence is not an error.
-		os.Remove(metaPath(m))
+		if err := os.Remove(metaPath(m)); err != nil && !os.IsNotExist(err) {
+			internalError(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(matches)})
 }
