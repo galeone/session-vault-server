@@ -28,11 +28,11 @@ CGO_ENABLED=0 go build -trimpath \
 %install
 install -Dm755 %{name} %{buildroot}%{_bindir}/%{name}
 install -Dm644 misc/%{name}.service %{buildroot}%{_unitdir}/%{name}.service
-install -d -m700 %{buildroot}%{_sysconfdir}/%{name}
+install -d -m700 %{buildroot}%{_sysconfdir}/session-vault
 
 %post
 # Create the configuration directory, then enable the unit.
-[ -d %{_sysconfdir}/%{name} ] || install -d -m 0700 %{_sysconfdir}/%{name}
+[ -d %{_sysconfdir}/session-vault ] || install -d -m 0700 %{_sysconfdir}/session-vault
 %systemd_post %{name}.service
 
 %preun
@@ -44,7 +44,7 @@ install -d -m700 %{buildroot}%{_sysconfdir}/%{name}
 %files
 %{_bindir}/%{name}
 %{_unitdir}/%{name}.service
-%dir %attr(0700, root, root) %{_sysconfdir}/%{name}
+%dir %attr(0700, root, root) %{_sysconfdir}/session-vault
 
 %changelog
 # Managed by release-please (CHANGELOG.md); kept intentionally minimal.

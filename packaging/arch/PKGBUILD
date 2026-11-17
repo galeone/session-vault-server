@@ -31,5 +31,7 @@ package() {
 	# 'filesystem' package and pacman rejects packages that own it.
 	install -Dm644 "$srcdir/$pkgname-$pkgver/misc/$pkgname.service" \
 		"$pkgdir/usr/lib/systemd/system/$pkgname.service"
-	install -d -m700 "$pkgdir/etc/$pkgname"
+	# Note: /etc/session-vault (not $pkgname) — must match the unit's
+	# EnvironmentFile= and the data dir naming.
+	install -d -m700 "$pkgdir/etc/session-vault"
 }
