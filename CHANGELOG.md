@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0](https://github.com/galeone/session-vault-server/compare/v1.1.0...v1.2.0) (2026-11-17)
+
+
+### Features
+
+* add session-vault@.service systemd template unit ([912290e](https://github.com/galeone/session-vault-server/commit/912290ebdf587b159ed712477cecbef33ff0089d))
+* use a single session-vault.service unit with hardcoded user ([e5eb6df](https://github.com/galeone/session-vault-server/commit/e5eb6dfb95dcae769884572dcd7f915cacce09ec))
+
+
+### Bug Fixes
+
+* install unit to usr/lib, skip dep install when tools present ([a176385](https://github.com/galeone/session-vault-server/commit/a176385dd2303823d3f33431246114cd49468129))
+* make port and data dir overridable, fix DynamicUser unit ([fda446a](https://github.com/galeone/session-vault-server/commit/fda446aa94726451c8c87d67a644d5ca3105d6f8))
+* makepkg is part of pacman, not a separate package ([9c8df2e](https://github.com/galeone/session-vault-server/commit/9c8df2ef364d1186e210f959178744ce6c28b855))
+* use /etc/session-vault consistently in all packagings ([2fff4ab](https://github.com/galeone/session-vault-server/commit/2fff4abd01c0869deeb0fe9a5f72fca8d52313bf))
+* use $(VAR) form for all make variable references ([7136f79](https://github.com/galeone/session-vault-server/commit/7136f7977ba7b7914c3e881b989050cef09dfa1a))
+
 ## [1.1.0](https://github.com/galeone/session-vault-server/compare/v1.0.0...v1.1.0) (2026-11-17)
 
 
