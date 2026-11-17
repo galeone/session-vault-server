@@ -17,6 +17,100 @@ go build -o session-vault-server .
 SESSION_VAULT_TOKEN=some-long-random-token ./session-vault-server
 ```
 
+## Running under systemd / distro packages
+
+The easiest way to run the server as a system service is the native distro
+package, built from the repository with the [Makefile](Makefile) (in the
+style of [gpu-unlock](https://github.com/Zagitta/gpu-unlock)):
+
+```sh
+make install            # detect the distro from /etc/os-release and install
+
+# or explicitly:
+make install-arch       # Arch:        makepkg + pacman -U
+make install-deb        # Debian/Ubuntu: dpkg-buildpackage + dpkg -i
+make install-rpm        # Fedora/RHEL:   rpmbuild + dnf install
+```
+
+`make arch` / `make deb` / `make rpm` build the package into `build/`
+without installing it, and `make dist` produces the versioned source
+tarball. The package version is the latest release-please tag (`vX.Y.Z`);
+override with `make VERSION=x.y.z` on an untagged tree.
+
+The package installs:
+
+- `/usr/bin/session-vault-server`
+- the hardened unit [misc/session-vault-server.service](misc/session-vault-server.service)
+  (enabled on install) — it runs the server as the dedicated ephemeral user
+  `session-vault` (`DynamicUser=`), so it never runs as root or a login user
+- `/etc/session-vault/` (0700) for the service environment
+
+Before the first start, set the tokens:
+
+```sh
+TOKEN=$(openssl rand -hex 32)                  # keep this: it goes to the client
+HASH=$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)
+sudo tee /etc/session-vault/session-vault.env >/dev/null <<EOF
+SESSION_VAULT_TOKEN_HASHES=$HASH:default
+EOF
+sudo chmod 0600 /etc/session-vault/session-vault.env
+sudo systemctl restart session-vault-server
+```
+
+- Data: `/var/lib/session-vault/` (owned by the dynamic user), logs there
+  under `logs/` and in the journal: `journalctl -u session-vault-server -f`.
+- Liveness: `curl http://localhost:8080/healthz`.
+- The server is multi-user: add further tokens to
+  `/etc/session-vault/session-vault.env` (`SESSION_VAULT_TOKENS` /
+  `SESSION_VAULT_TOKEN_HASHES`) and restart — each user only ever sees their
+  own sessions.
+
+### Overriding the port or data directory
+
+Both are plain env vars — the unit just ships sane defaults. The
+`EnvironmentFile=` is read first, the unit's own `Environment=` lines next,
+and **drop-ins last**, so an override has to live in a drop-in (or in the
+unit file itself). Use `systemctl edit`, which opens a drop-in at
+`/etc/systemd/system/session-vault-server.service.d/override.conf`:
+
+Port (e.g. listen on 9090):
+
+```sh
+sudo systemctl edit session-vault-server
+```
+
+```ini
+[Service]
+Environment=SESSION_VAULT_ADDR=:9090
+```
+
+Data directory (e.g. `/var/lib/my-vault`):
+
+```sh
+sudo systemctl edit session-vault-server
+```
+
+```ini
+[Service]
+Environment=SESSION_VAULT_DATA=/var/lib/my-vault
+Environment=SESSION_VAULT_LOG_DIR=/var/lib/my-vault/logs
+StateDirectory=my-vault
+```
+
+The extra `StateDirectory=` line is what makes a custom path work: with
+`ProtectSystem=strict` the whole filesystem is read-only for the service
+except its state directories, and `StateDirectory=` is what creates the
+directory and chowns it to the ephemeral `session-vault` user on every
+boot. Without it the server would start and immediately fail to write.
+
+Then `sudo systemctl restart session-vault-server` (no `daemon-reload`
+needed — `systemctl edit` reloads the daemon for you). Verify with
+`systemctl show session-vault-server -p Environment` and
+`curl http://localhost:<port>/healthz`.
+
+Packaging sources live in `packaging/` (`arch/PKGBUILD`, `debian/`,
+`rpm/*.spec`) and are the starting point for distro repository submissions.
+
 ## Configuration
 
 | Env var | Default | Meaning |

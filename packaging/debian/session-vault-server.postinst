@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+# Configuration directory for the service environment file
+# (SESSION_VAULT_TOKEN_HASHES, ...). Created empty; the admin adds the
+# tokens before the first start.
+if [ ! -d /etc/session-vault ]; then
+	install -d -m 0700 -o root -g root /etc/session-vault
+	echo "session-vault: set tokens in /etc/session-vault/session-vault.env" \
+		"before the first start (see the README)"
+fi
+
+exit 0
+
+# DEBHELPER_VERSION=15
+# dh_installsystemd appends the unit enable/disable lines to this script.
