@@ -53,6 +53,7 @@ All endpoints (except `/healthz`) require `Authorization: Bearer <token>`.
 | `GET /api/v1/sessions` | List the caller's sessions as a JSON array of metadata, newest first |
 | `GET /api/v1/sessions/{id}` | Download one blob exactly as stored (`application/x-ndjson`, or `application/octet-stream` + `X-Encrypted` header when encrypted) |
 | `GET /api/v1/sessions/{id}/meta` | Metadata for one session |
+| `DELETE /api/v1/sessions/{id}` | Remove a session (blob and metadata). Scoped to the caller's own sessions; if the id exists under several projects, all copies are removed. Returns `{"deleted": N}` |
 | `GET /healthz` | Liveness check, no auth |
 
 Metadata shape:
