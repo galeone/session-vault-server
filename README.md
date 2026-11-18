@@ -162,12 +162,17 @@ The server assumes this schema (owned by the hosted application):
 
 ```sql
 CREATE TABLE vault_users (
-  id            BIGSERIAL PRIMARY KEY,
-  username      TEXT NOT NULL UNIQUE,
-  email         TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  plan          TEXT NOT NULL DEFAULT 'free',
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  id             BIGSERIAL PRIMARY KEY,
+  username       TEXT NOT NULL UNIQUE,
+  email          TEXT NOT NULL UNIQUE,
+  password_hash  TEXT NOT NULL,
+  plan           TEXT NOT NULL DEFAULT 'free',
+  -- Deferred plan changes: an upgrade sets plan immediately and clears
+  -- these; a downgrade sets pending_plan + plan_change_at (end of the
+  -- paid period) and a cron flips plan to pending_plan when due.
+  pending_plan   TEXT,
+  plan_change_at TIMESTAMPTZ,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE vault_tokens (
@@ -205,6 +210,29 @@ Listing, downloading, and deleting are never blocked by the quota. A plan
 value the server doesn't know is fail-closed (HTTP 403 + server log), so a
 typo'd plan can never silently mean "unlimited". Env-token principals have
 no plan and remain unlimited.
+
+### Plan changes (upgrades and downgrades)
+
+The vault only ever enforces `plan` as stored; the *timing* of a change is
+the billing application's job, using `pending_plan` / `plan_change_at`:
+
+- **Upgrade** — takes effect immediately:
+  `UPDATE vault_users SET plan = 'max', pending_plan = NULL, plan_change_at = NULL WHERE ...;`
+- **Downgrade** — takes effect at the end of the paid period, so the user
+  keeps their current plan for what they already paid for:
+  `UPDATE vault_users SET pending_plan = 'free', plan_change_at = <period_end> WHERE ...;`
+- **The flip** — a periodic job (the billing app owns it) applies due
+  changes:
+  `UPDATE vault_users SET plan = pending_plan, pending_plan = NULL, plan_change_at = NULL WHERE plan_change_at IS NOT NULL AND plan_change_at <= now();`
+
+Downgrade consequences at the vault, once the flip has happened: the
+existing sessions (possibly far above the new limit) stay fully
+accessible — list, download, and delete are never quota-gated and the
+vault never deletes user data — re-saves of ids the user already stores
+keep working, and only *new* sessions are refused with the 402 above
+until the stored count drops below the new limit. The downgrade
+confirmation page should warn the user to export or delete what they no
+longer need.
 
 ## API
 

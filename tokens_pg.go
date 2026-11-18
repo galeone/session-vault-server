@@ -15,12 +15,18 @@ import (
 // assumes the following schema, owned by the hosted-service application:
 //
 //	CREATE TABLE vault_users (
-//		id            BIGSERIAL PRIMARY KEY,
-//		username      TEXT NOT NULL UNIQUE,
-//		email         TEXT NOT NULL UNIQUE,
-//		password_hash TEXT NOT NULL,
-//		plan          TEXT NOT NULL DEFAULT 'free',
-//		created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+//		id             BIGSERIAL PRIMARY KEY,
+//		username       TEXT NOT NULL UNIQUE,
+//		email          TEXT NOT NULL UNIQUE,
+//		password_hash  TEXT NOT NULL,
+//		plan           TEXT NOT NULL DEFAULT 'free',
+//		-- Deferred plan changes: an upgrade sets plan immediately and
+//		-- clears these; a downgrade sets pending_plan + plan_change_at
+//		-- (end of the paid period) and a cron flips plan to pending_plan
+//		-- when the time comes. The vault always enforces `plan` as-is.
+//		pending_plan   TEXT,
+//		plan_change_at TIMESTAMPTZ,
+//		created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 //	);
 //
 //	CREATE TABLE vault_tokens (
