@@ -198,7 +198,7 @@ are free); only a *new* session is refused once the cap is hit, with HTTP
 402 and a JSON body the client can relay to the user:
 
 ```json
-{"error": "session limit reached", "plan": "free", "limit": 10}
+{"error": "session limit reached", "plan": "free", "limit": 10, "used": 10}
 ```
 
 Listing, downloading, and deleting are never blocked by the quota. A plan

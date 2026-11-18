@@ -77,8 +77,8 @@ func TestPlanQuota(t *testing.T) {
 	if code != http.StatusPaymentRequired {
 		t.Fatalf("upload over the cap = %d, want 402 (body %v)", code, body)
 	}
-	if body["plan"] != "free" || body["limit"] != float64(2) {
-		t.Fatalf("quota body = %v, want plan=free limit=2", body)
+	if body["plan"] != "free" || body["limit"] != float64(2) || body["used"] != float64(2) {
+		t.Fatalf("quota body = %v, want plan=free limit=2 used=2", body)
 	}
 	// ...while re-saving an existing id is always allowed.
 	if code, _ := uploadBody(t, ts, "tok", "a2", "p1"); code != http.StatusCreated {

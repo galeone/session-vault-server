@@ -270,6 +270,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 				"error": "session limit reached",
 				"plan":  p.plan,
 				"limit": limit,
+				"used":  len(ids),
 			})
 			return
 		}
