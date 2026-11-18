@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/galeone/session-vault-server/compare/v1.2.0...v1.2.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* resolve the package version from the newest reachable tag ([a9e684d](https://github.com/galeone/session-vault-server/commit/a9e684d265a4b8844156420378ce72fda4189224))
+* resolve the package version from the newest reachable tag ([fd0c423](https://github.com/galeone/session-vault-server/commit/fd0c42331e1d63f173db2dd88188f10fc70cd99e))
+
 ## [1.2.0](https://github.com/galeone/session-vault-server/compare/v1.1.0...v1.2.0) (2026-11-17)
 
 
