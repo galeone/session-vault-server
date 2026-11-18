@@ -30,9 +30,11 @@ package main
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -112,6 +114,11 @@ func main() {
 	}
 
 	s := &server{dataDir: dataDir, tokens: store, maxUpload: maxUploadBytes}
+	if sweeper, ok := store.(interface {
+		expiredUsers(ctx context.Context) ([]string, error)
+	}); ok {
+		go s.sweep(sweeper)
+	}
 
 	slog.Info("session-vault-server listening",
 		"version", version, "addr", addr, "data_dir", dataDir)
@@ -212,6 +219,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// errAlreadyPurged signals that the account row is already gone (another
+// process raced ahead and finished the purge).
+var errAlreadyPurged = errors.New("account already purged")
+
 func (s *server) auth(next func(http.ResponseWriter, *http.Request, principal)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -220,6 +231,14 @@ func (s *server) auth(next func(http.ResponseWriter, *http.Request, principal)) 
 		p, known := s.tokens.lookup(r.Context(), hashToken(strings.TrimSpace(token)))
 		if !ok || !known || p.user == "" {
 			http.Error(rw, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if p.deleteAt != nil && !p.deleteAt.After(time.Now()) {
+			// The account's 30-day grace period is over: purge the stored
+			// sessions and the account row right away, then refuse. Eager
+			// purge here; the sweep covers dormant accounts.
+			s.purgeAccount(r.Context(), p.user)
+			http.Error(rw, "account deleted", http.StatusGone)
 			return
 		}
 		defer func() {
@@ -232,6 +251,50 @@ func (s *server) auth(next func(http.ResponseWriter, *http.Request, principal)) 
 			)
 		}()
 		next(rw, r, p)
+	}
+}
+
+// purgeAccount removes the user's stored sessions from disk and, when the
+// token store is Postgres-backed, deletes the account row (vault_tokens and
+// vault_sessions cascade via their foreign keys). It is idempotent.
+func (s *server) purgeAccount(ctx context.Context, user string) {
+	if err := os.RemoveAll(filepath.Join(s.dataDir, user)); err != nil {
+		slog.Error("removing stored sessions", "user", user, "error", err)
+		return
+	}
+	if purger, ok := s.tokens.(interface {
+		purgeUser(ctx context.Context, user string) error
+	}); ok {
+		if err := purger.purgeUser(ctx, user); err != nil {
+			if !errors.Is(err, errAlreadyPurged) {
+				slog.Error("deleting the account row", "user", user, "error", err)
+			}
+			return
+		}
+	}
+	slog.Info("account purged", "user", user)
+}
+
+// sweep periodically purges the accounts whose deletion date has passed.
+// The auth path purges eagerly for users who are still active; this is what
+// actually frees the data of dormant accounts once the 30-day grace period
+// is over, so nobody has to outlive it by touching the API again.
+type accountSweeper interface {
+	expiredUsers(ctx context.Context) ([]string, error)
+}
+
+func (s *server) sweep(store accountSweeper) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		users, err := store.expiredUsers(context.Background())
+		if err != nil {
+			slog.Error("listing accounts due for deletion", "error", err)
+			continue
+		}
+		for _, u := range users {
+			s.purgeAccount(context.Background(), u)
+		}
 	}
 }
 

@@ -18,7 +18,6 @@ import (
 //		id             BIGSERIAL PRIMARY KEY,
 //		username       TEXT NOT NULL UNIQUE,
 //		email          TEXT NOT NULL UNIQUE,
-//		password_hash  TEXT NOT NULL,
 //		plan           TEXT NOT NULL DEFAULT 'free',
 //		-- Deferred plan changes: an upgrade sets plan immediately and
 //		-- clears these; a downgrade sets pending_plan + plan_change_at
@@ -27,6 +26,11 @@ import (
 //		-- once plan_change_at has passed).
 //		pending_plan   TEXT,
 //		plan_change_at TIMESTAMPTZ,
+//		-- Account deletion: the web app sets delete_at = now() + 30 days
+//		-- when the user requests a deletion; until it passes the account
+//		-- works normally. Once it has passed the server purges the user's
+//		-- stored sessions and deletes the row (tokens cascade).
+//		delete_at      TIMESTAMPTZ,
 //		created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 //	);
 //
@@ -64,6 +68,7 @@ func newPGTokenStore(dsn string) (*pgTokenStore, error) {
 
 func (s *pgTokenStore) lookup(ctx context.Context, tokenHash string) (principal, bool) {
 	var p principal
+	var deleteAt sql.NullTime
 	// The effective plan is computed here rather than flipped by some
 	// background job: a pending change (always a downgrade, scheduled at
 	// the end of the paid period) takes effect the moment it is due, with
@@ -73,11 +78,12 @@ func (s *pgTokenStore) lookup(ctx context.Context, tokenHash string) (principal,
 			   CASE WHEN u.pending_plan IS NOT NULL AND u.plan_change_at <= now()
 			        THEN u.pending_plan
 			        ELSE u.plan
-			   END
+			   END,
+			   u.delete_at
 		   FROM vault_tokens t
 		   JOIN vault_users u ON u.id = t.user_id
 		  WHERE t.token_hash = $1`,
-		tokenHash).Scan(&p.user, &p.plan)
+		tokenHash).Scan(&p.user, &p.plan, &deleteAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return principal{}, false
 	}
@@ -88,5 +94,44 @@ func (s *pgTokenStore) lookup(ctx context.Context, tokenHash string) (principal,
 		slog.Error("token lookup", "error", err, "token_hash", tokenHash)
 		return principal{}, false
 	}
+	if deleteAt.Valid {
+		t := deleteAt.Time
+		p.deleteAt = &t
+	}
 	return p, true
+}
+
+// purgeUser deletes the account row; vault_tokens and vault_sessions
+// cascade via their foreign keys. It does not touch the on-disk data:
+// the server owns the data directory and removes it separately.
+func (s *pgTokenStore) purgeUser(ctx context.Context, user string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM vault_users WHERE username = $1`, user)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errAlreadyPurged
+	}
+	return nil
+}
+
+// expiredUsers lists the accounts whose deletion date has passed.
+func (s *pgTokenStore) expiredUsers(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT username FROM vault_users WHERE delete_at IS NOT NULL AND delete_at <= now()`)
+	if err != nil {
+		return nil, err
+	}
+	var users []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	err = rows.Close()
+	return users, errors.Join(err, rows.Err())
 }

@@ -165,7 +165,6 @@ CREATE TABLE vault_users (
   id             BIGSERIAL PRIMARY KEY,
   username       TEXT NOT NULL UNIQUE,
   email          TEXT NOT NULL UNIQUE,
-  password_hash  TEXT NOT NULL,
   plan           TEXT NOT NULL DEFAULT 'free',
   -- Deferred plan changes: an upgrade sets plan immediately and clears
   -- these; a downgrade sets pending_plan + plan_change_at (end of the
@@ -173,6 +172,9 @@ CREATE TABLE vault_users (
   -- background flip is needed.
   pending_plan   TEXT,
   plan_change_at TIMESTAMPTZ,
+  -- Account deletion: the web app sets this to now() + 30 days when the
+  -- user asks for a deletion (grace period, cancellable).
+  delete_at      TIMESTAMPTZ,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -238,6 +240,24 @@ keep working, and only *new* sessions are refused with the 402 above
 until the stored count drops below the new limit. The downgrade
 confirmation page should warn the user to export or delete what they no
 longer need.
+
+### Account deletion (30-day grace period)
+
+The web app sets `delete_at = now() + interval '30 days'` when a user
+asks to delete the account, and `NULL` to cancel. The vault does the
+purging:
+
+- while `delete_at` is in the future the account works normally;
+- once it has passed, the next authenticated request gets HTTP 410 and
+  triggers the purge immediately (`data/<user>` removed from disk, then
+  `DELETE FROM vault_users` — tokens and sessions cascade);
+- an hourly sweep purges expired accounts of users who never come back,
+  so the data is never kept past the grace period.
+
+The purge is idempotent (disk removal and row deletion are independent
+and race-safe), and a scheduled deletion never blocks anything in the
+meantime — including re-saves and quota, which keep working until the
+purge runs.
 
 ## API
 

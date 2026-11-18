@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // testServer builds a server rooted at a fresh temp dir with one token per
@@ -426,5 +427,34 @@ func TestMetaWritten(t *testing.T) {
 	info, _ := os.Stat(metaPath)
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("meta perm: got %o, want 600", perm)
+	}
+}
+
+func TestPurgedAccountIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	userDir := filepath.Join(dir, "gone@example.com", "proj")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"s1.data", "s1.meta.json", "s2.data"} {
+		if err := os.WriteFile(filepath.Join(userDir, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-time.Hour)
+	s := &server{
+		dataDir:   dir,
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "gone@example.com", deleteAt: &past}}},
+		maxUpload: maxUploadBytes,
+	}
+	ts := httptest.NewServer(routes(s))
+	defer ts.Close()
+
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions", "tok", nil, nil)
+	if resp.StatusCode != http.StatusGone {
+		t.Fatalf("status = %d, want 410", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "gone@example.com")); !os.IsNotExist(err) {
+		t.Fatalf("user data dir still exists after purge: %v", err)
 	}
 }
