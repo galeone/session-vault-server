@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/galeone/session-vault-server/compare/v1.2.1...v1.3.0) (2026-11-18)
+
+
+### Features
+
+* Postgres token source, per-plan quotas, account purge ([#9](https://github.com/galeone/session-vault-server/issues/9)) ([8352b97](https://github.com/galeone/session-vault-server/commit/8352b976d203211b56745573afc2d9d55db34085))
+
 ## [1.2.1](https://github.com/galeone/session-vault-server/compare/v1.2.0...v1.2.1) (2026-11-18)
 
 
