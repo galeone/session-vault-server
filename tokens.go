@@ -31,7 +31,7 @@ type tokenStore interface {
 var planLimits = map[string]int{
 	"free": 10,
 	"plus": 100,
-	"max":  1000,
+	"max":  500,
 }
 
 // staticTokenStore is the env-token store: the startup-built map of token
