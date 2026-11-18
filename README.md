@@ -133,6 +133,7 @@ Packaging sources live in `packaging/` (`arch/PKGBUILD`, `debian/`,
 | `SESSION_VAULT_LOG_LEVEL` | `info` | Log level: `debug` `info` `warn` `error` |
 | `SESSION_VAULT_LOG_DIR` | — | Directory for the daily log files |
 | `SESSION_VAULT_LOG_FILE` | — | Log to this file instead of the daily log |
+| `SESSION_VAULT_DB_DSN` | — | Postgres DSN; when set, tokens and plans come from the database instead of the env vars above (hosted mode) |
 
 At least one token must be configured. Each token maps to a user, and every
 user only ever sees their own sessions. Tokens are compared by SHA-256 hash;
@@ -146,6 +147,64 @@ printf '%s' "$TOKEN" | sha256sum        # give the hash to the server, keep TOKE
 # on the server:
 SESSION_VAULT_TOKEN_HASHES=<hash>:paolo ./session-vault-server
 ```
+
+## Hosted mode: Postgres tokens and plan quotas
+
+Setting `SESSION_VAULT_DB_DSN` switches the token source from the
+environment to a Postgres database. This is how the hosted service
+registers users, hands out tokens, and limits each plan: the server looks
+up `sha256(token)` in `vault_tokens` and joins `vault_users` for the
+namespace (`username`) and the quota (`plan`). The env token vars are
+ignored in this mode, and a failed database connection is fatal at startup
+— the vault would just 401 everyone.
+
+The server assumes this schema (owned by the hosted application):
+
+```sql
+CREATE TABLE vault_users (
+  id            BIGSERIAL PRIMARY KEY,
+  username      TEXT NOT NULL UNIQUE,
+  email         TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  plan          TEXT NOT NULL DEFAULT 'free',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE vault_tokens (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    BIGINT NOT NULL REFERENCES vault_users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  label      TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX vault_tokens_user_idx ON vault_tokens (user_id);
+```
+
+`token_hash` stores the lowercase hex SHA-256 of the bearer token — the
+vault never sees or stores the raw token.
+
+### Plans and quotas
+
+| Plan | Sessions storable |
+|---|---|
+| `free` | 10 |
+| `plus` | 100 |
+| `max` | 1000 |
+
+A quota counts the **unique session ids** a user stores across all
+projects. Re-saving an id the user already has is always allowed (updates
+are free); only a *new* session is refused once the cap is hit, with HTTP
+402 and a JSON body the client can relay to the user:
+
+```json
+{"error": "session limit reached", "plan": "free", "limit": 10}
+```
+
+Listing, downloading, and deleting are never blocked by the quota. A plan
+value the server doesn't know is fail-closed (HTTP 403 + server log), so a
+typo'd plan can never silently mean "unlimited". Env-token principals have
+no plan and remain unlimited.
 
 ## API
 

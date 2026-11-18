@@ -70,8 +70,8 @@ type Meta struct {
 
 type server struct {
 	dataDir string
-	tokens  map[string]string // sha256(token) hex -> user
-	mu      sync.Mutex        // serializes blob+meta commits (fixes interleaved re-uploads)
+	tokens  tokenStore
+	mu      sync.Mutex // serializes blob+meta commits (fixes interleaved re-uploads)
 	// maxUpload bounds a single (possibly gzip-compressed) upload body, and
 	// the decompressed size when the body is gzip. Configurable so tests can
 	// use a small cap.
@@ -85,20 +85,36 @@ func main() {
 	addr := envOr("SESSION_VAULT_ADDR", ":8080")
 	dataDir := envOr("SESSION_VAULT_DATA", "data")
 
-	tokens, err := loadTokens()
-	if err != nil {
-		slog.Error("loading tokens", "error", err)
-		os.Exit(1)
+	var store tokenStore
+	if dsn := os.Getenv("SESSION_VAULT_DB_DSN"); dsn != "" {
+		// Hosted mode: tokens and plans live in Postgres. A failed
+		// connection is fatal — booting with an unusable store would just
+		// 401 every request.
+		var err error
+		store, err = newPGTokenStore(dsn)
+		if err != nil {
+			slog.Error("opening the token database", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("token source", "source", "postgres")
+	} else {
+		tokens, err := loadTokens()
+		if err != nil {
+			slog.Error("loading tokens", "error", err)
+			os.Exit(1)
+		}
+		store = staticTokenStore{tokens: tokens}
+		slog.Info("token source", "source", "env", "tokens", len(tokens))
 	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		slog.Error("creating data dir", "path", dataDir, "error", err)
 		os.Exit(1)
 	}
 
-	s := &server{dataDir: dataDir, tokens: tokens, maxUpload: maxUploadBytes}
+	s := &server{dataDir: dataDir, tokens: store, maxUpload: maxUploadBytes}
 
 	slog.Info("session-vault-server listening",
-		"version", version, "addr", addr, "data_dir", dataDir, "tokens", len(tokens))
+		"version", version, "addr", addr, "data_dir", dataDir)
 	if err := http.ListenAndServe(addr, routes(s)); err != nil {
 		slog.Error("server", "error", err)
 		os.Exit(1)
@@ -196,13 +212,13 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-func (s *server) auth(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+func (s *server) auth(next func(http.ResponseWriter, *http.Request, principal)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		user := s.tokens[hashToken(strings.TrimSpace(token))]
-		if !ok || user == "" {
+		p, known := s.tokens.lookup(r.Context(), hashToken(strings.TrimSpace(token)))
+		if !ok || !known || p.user == "" {
 			http.Error(rw, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -210,16 +226,16 @@ func (s *server) auth(next func(http.ResponseWriter, *http.Request, string)) htt
 			slog.Info("request",
 				"method", r.Method,
 				"path", r.URL.Path,
-				"user", user,
+				"user", p.user,
 				"status", rw.status,
 				"duration", time.Since(start),
 			)
 		}()
-		next(rw, r, user)
+		next(rw, r, p)
 	}
 }
 
-func (s *server) upload(w http.ResponseWriter, r *http.Request, user string) {
+func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 	id := r.Header.Get("X-Session-Id")
 	project := r.Header.Get("X-Project")
 	if !validName.MatchString(id) || !validName.MatchString(project) {
@@ -231,13 +247,40 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user string) {
 		http.Error(w, "invalid X-Name header (want [A-Za-z0-9_-], max 64 chars)", http.StatusBadRequest)
 		return
 	}
-	if name == "" {
-		// An unnamed re-save of an already-labeled session keeps its label.
-		if old, err := readMeta(filepath.Join(s.dataDir, user, project, id+".meta.json")); err == nil {
-			name = old.Name
+	// Plan quotas (hosted mode): a re-save of an id the user already
+	// stores is always allowed; a brand-new session is refused once the
+	// user has stored `limit` unique ids. Env-token principals have no
+	// plan and are unlimited.
+	if p.plan != "" {
+		limit, known := planLimits[p.plan]
+		if !known {
+			// Fail closed: a plan the server doesn't know must never
+			// silently mean "unlimited".
+			slog.Error("unknown plan on account", "user", p.user, "plan", p.plan)
+			http.Error(w, "unknown plan on account", http.StatusForbidden)
+			return
+		}
+		ids, err := s.sessionIDs(p.user)
+		if err != nil {
+			internalError(w, err)
+			return
+		}
+		if len(ids) >= limit && !ids[id] {
+			writeJSON(w, http.StatusPaymentRequired, map[string]any{
+				"error": "session limit reached",
+				"plan":  p.plan,
+				"limit": limit,
+			})
+			return
 		}
 	}
 
+	if name == "" {
+		// An unnamed re-save of an already-labeled session keeps its label.
+		if old, err := readMeta(filepath.Join(s.dataDir, p.user, project, id+".meta.json")); err == nil {
+			name = old.Name
+		}
+	}
 	body := io.Reader(http.MaxBytesReader(w, r.Body, s.maxUpload))
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(body)
@@ -250,7 +293,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user string) {
 	}
 
 	// 0700: the directory may hold plaintext transcripts.
-	dir := filepath.Join(s.dataDir, user, project)
+	dir := filepath.Join(s.dataDir, p.user, project)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		internalError(w, err)
 		return
@@ -310,8 +353,8 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, user string) {
 	writeJSON(w, http.StatusCreated, meta)
 }
 
-func (s *server) list(w http.ResponseWriter, _ *http.Request, user string) {
-	metaFiles, err := filepath.Glob(filepath.Join(s.dataDir, user, "*", "*.meta.json"))
+func (s *server) list(w http.ResponseWriter, _ *http.Request, p principal) {
+	metaFiles, err := filepath.Glob(filepath.Join(s.dataDir, p.user, "*", "*.meta.json"))
 	if err != nil {
 		internalError(w, err)
 		return
@@ -330,8 +373,8 @@ func (s *server) list(w http.ResponseWriter, _ *http.Request, user string) {
 	writeJSON(w, http.StatusOK, metas)
 }
 
-func (s *server) download(w http.ResponseWriter, r *http.Request, user string) {
-	path, ok := s.findSession(w, r.PathValue("id"), user)
+func (s *server) download(w http.ResponseWriter, r *http.Request, p principal) {
+	path, ok := s.findSession(w, r.PathValue("id"), p.user)
 	if !ok {
 		return
 	}
@@ -344,8 +387,8 @@ func (s *server) download(w http.ResponseWriter, r *http.Request, user string) {
 	http.ServeFile(w, r, path)
 }
 
-func (s *server) meta(w http.ResponseWriter, r *http.Request, user string) {
-	path, ok := s.findSession(w, r.PathValue("id"), user)
+func (s *server) meta(w http.ResponseWriter, r *http.Request, p principal) {
+	path, ok := s.findSession(w, r.PathValue("id"), p.user)
 	if !ok {
 		return
 	}
@@ -357,13 +400,13 @@ func (s *server) meta(w http.ResponseWriter, r *http.Request, user string) {
 // The id is scoped to the user's own directory, so a token can only ever
 // delete its own sessions. If the same id exists under several projects,
 // all copies are removed.
-func (s *server) delete(w http.ResponseWriter, r *http.Request, user string) {
+func (s *server) delete(w http.ResponseWriter, r *http.Request, p principal) {
 	id := r.PathValue("id")
 	if !validName.MatchString(id) {
 		http.Error(w, "invalid session id", http.StatusBadRequest)
 		return
 	}
-	matches, err := filepath.Glob(filepath.Join(s.dataDir, user, "*", id+".data"))
+	matches, err := filepath.Glob(filepath.Join(s.dataDir, p.user, "*", id+".data"))
 	if err != nil {
 		internalError(w, err)
 		return
@@ -384,6 +427,21 @@ func (s *server) delete(w http.ResponseWriter, r *http.Request, user string) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(matches)})
+}
+
+// sessionIDs returns the set of session ids the user currently stores,
+// across all projects: an id present under two projects counts once, which
+// is what the plan quotas are expressed in.
+func (s *server) sessionIDs(user string) (map[string]bool, error) {
+	ids := map[string]bool{}
+	blobs, err := filepath.Glob(filepath.Join(s.dataDir, user, "*", "*.data"))
+	if err != nil {
+		return nil, err
+	}
+	for _, b := range blobs {
+		ids[strings.TrimSuffix(filepath.Base(b), ".data")] = true
+	}
+	return ids, nil
 }
 
 // findSession resolves a session id to its blob path for the given user,

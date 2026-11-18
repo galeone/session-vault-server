@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,10 +23,107 @@ func testServer(t *testing.T, users map[string]string, maxUpload int64) (*httpte
 	for token, user := range users {
 		tokens[hashToken(token)] = user
 	}
-	s := &server{dataDir: dir, tokens: tokens, maxUpload: maxUpload}
+	s := &server{dataDir: dir, tokens: staticTokenStore{tokens: tokens}, maxUpload: maxUpload}
 	ts := httptest.NewServer(routes(s))
 	t.Cleanup(ts.Close)
 	return ts, users
+}
+
+// planStore is a tokenStore whose tokens carry a plan, for quota tests.
+type planStore struct{ m map[string]principal }
+
+func (s planStore) lookup(_ context.Context, h string) (principal, bool) {
+	p, ok := s.m[h]
+	return p, ok
+}
+
+// uploadBody posts a session through the vault API and returns the status
+// and parsed JSON body.
+func uploadBody(t *testing.T, ts *httptest.Server, token, id, project string) (int, map[string]any) {
+	t.Helper()
+	resp := doReq(t, ts, http.MethodPost, ts.URL+"/api/v1/sessions", token, []byte("line"), map[string]string{
+		"X-Session-Id": id,
+		"X-Project":    project,
+	})
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("parsing %d body: %v", resp.StatusCode, err)
+	}
+	return resp.StatusCode, body
+}
+
+func TestPlanQuota(t *testing.T) {
+	limit := planLimits["free"]
+	planLimits["free"] = 2
+	t.Cleanup(func() { planLimits["free"] = limit })
+
+	s := &server{
+		dataDir:   t.TempDir(),
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "u", plan: "free"}}},
+		maxUpload: maxUploadBytes,
+	}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+
+	if code, _ := uploadBody(t, ts, "tok", "a1", "p1"); code != http.StatusCreated {
+		t.Fatalf("first upload = %d, want 201", code)
+	}
+	if code, _ := uploadBody(t, ts, "tok", "a2", "p1"); code != http.StatusCreated {
+		t.Fatalf("second upload = %d, want 201", code)
+	}
+	// At the cap: a new id is refused with the plan details...
+	code, body := uploadBody(t, ts, "tok", "a3", "p1")
+	if code != http.StatusPaymentRequired {
+		t.Fatalf("upload over the cap = %d, want 402 (body %v)", code, body)
+	}
+	if body["plan"] != "free" || body["limit"] != float64(2) {
+		t.Fatalf("quota body = %v, want plan=free limit=2", body)
+	}
+	// ...while re-saving an existing id is always allowed.
+	if code, _ := uploadBody(t, ts, "tok", "a2", "p1"); code != http.StatusCreated {
+		t.Fatalf("re-save of existing id = %d, want 201", code)
+	}
+	// The same id under a different project is not a new session: the
+	// quota counts unique ids across projects.
+	if code, _ := uploadBody(t, ts, "tok", "a1", "p2"); code != http.StatusCreated {
+		t.Fatalf("same id, other project = %d, want 201", code)
+	}
+	// And listing is never blocked by the quota.
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions", "tok", nil, nil)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list at the cap = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestQuotaUnknownPlanIsFailClosed(t *testing.T) {
+	s := &server{
+		dataDir:   t.TempDir(),
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "u", plan: "enterprise"}}},
+		maxUpload: maxUploadBytes,
+	}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+
+	resp := doReq(t, ts, http.MethodPost, ts.URL+"/api/v1/sessions", "tok", []byte("line"), map[string]string{
+		"X-Session-Id": "a1",
+		"X-Project":    "p1",
+	})
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("upload with unknown plan = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestStaticStoreHasNoQuota(t *testing.T) {
+	// Env-token principals carry no plan: unlimited, as before.
+	ts, _ := testServer(t, map[string]string{"tok": "u"}, maxUploadBytes)
+	for i := 0; i < planLimits["free"]+1; i++ {
+		if code, _ := uploadBody(t, ts, "tok", fmt.Sprintf("a%d", i), "p1"); code != http.StatusCreated {
+			t.Fatalf("upload %d = %d, want 201 (env tokens are unlimited)", i, code)
+		}
+	}
 }
 
 func doReq(t *testing.T, ts *httptest.Server, method, url, token string, body []byte, headers map[string]string) *http.Response {
@@ -302,7 +401,7 @@ func TestLimitedReader(t *testing.T) {
 
 func TestMetaWritten(t *testing.T) {
 	dataDir := t.TempDir()
-	s := &server{dataDir: dataDir, tokens: map[string]string{hashToken("tok"): "default"}, maxUpload: maxUploadBytes}
+	s := &server{dataDir: dataDir, tokens: staticTokenStore{tokens: map[string]string{hashToken("tok"): "default"}}, maxUpload: maxUploadBytes}
 	ts2 := httptest.NewServer(routes(s))
 	defer ts2.Close()
 	resp := doReq(t, ts2, "POST", ts2.URL+"/api/v1/sessions", "tok", []byte(`x`), map[string]string{
