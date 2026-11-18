@@ -169,7 +169,8 @@ CREATE TABLE vault_users (
   plan           TEXT NOT NULL DEFAULT 'free',
   -- Deferred plan changes: an upgrade sets plan immediately and clears
   -- these; a downgrade sets pending_plan + plan_change_at (end of the
-  -- paid period) and a cron flips plan to pending_plan when due.
+  -- paid period). The effective plan is computed at lookup time, so no
+  -- background flip is needed.
   pending_plan   TEXT,
   plan_change_at TIMESTAMPTZ,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -221,11 +222,15 @@ the billing application's job, using `pending_plan` / `plan_change_at`:
 - **Downgrade** — takes effect at the end of the paid period, so the user
   keeps their current plan for what they already paid for:
   `UPDATE vault_users SET pending_plan = 'free', plan_change_at = <period_end> WHERE ...;`
-- **The flip** — a periodic job (the billing app owns it) applies due
-  changes:
-  `UPDATE vault_users SET plan = pending_plan, pending_plan = NULL, plan_change_at = NULL WHERE plan_change_at IS NOT NULL AND plan_change_at <= now();`
 
-Downgrade consequences at the vault, once the flip has happened: the
+No cron, goroutine, or "flip" job is needed anywhere: the vault computes
+the *effective* plan at lookup time — `pending_plan` wins the moment
+`plan_change_at` has passed, `plan` otherwise. The change takes effect
+with zero drift, on every instance, without any process owning the
+transition. (The billing app may optionally normalize the row later — set
+`plan = pending_plan`, clear the pending columns — but that is cosmetic.)
+
+Downgrade consequences at the vault, once the due time has passed: the
 existing sessions (possibly far above the new limit) stay fully
 accessible — list, download, and delete are never quota-gated and the
 vault never deletes user data — re-saves of ids the user already stores

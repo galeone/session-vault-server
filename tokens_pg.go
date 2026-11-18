@@ -22,8 +22,9 @@ import (
 //		plan           TEXT NOT NULL DEFAULT 'free',
 //		-- Deferred plan changes: an upgrade sets plan immediately and
 //		-- clears these; a downgrade sets pending_plan + plan_change_at
-//		-- (end of the paid period) and a cron flips plan to pending_plan
-//		-- when the time comes. The vault always enforces `plan` as-is.
+//		-- (end of the paid period). No flip is needed anywhere: the
+//		-- effective plan is computed at lookup time (pending_plan wins
+//		-- once plan_change_at has passed).
 //		pending_plan   TEXT,
 //		plan_change_at TIMESTAMPTZ,
 //		created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -63,8 +64,16 @@ func newPGTokenStore(dsn string) (*pgTokenStore, error) {
 
 func (s *pgTokenStore) lookup(ctx context.Context, tokenHash string) (principal, bool) {
 	var p principal
+	// The effective plan is computed here rather than flipped by some
+	// background job: a pending change (always a downgrade, scheduled at
+	// the end of the paid period) takes effect the moment it is due, with
+	// zero drift and no process to own the flip.
 	err := s.db.QueryRowContext(ctx,
-		`SELECT u.username, u.plan
+		`SELECT u.username,
+			   CASE WHEN u.pending_plan IS NOT NULL AND u.plan_change_at <= now()
+			        THEN u.pending_plan
+			        ELSE u.plan
+			   END
 		   FROM vault_tokens t
 		   JOIN vault_users u ON u.id = t.user_id
 		  WHERE t.token_hash = $1`,
