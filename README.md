@@ -198,7 +198,7 @@ vault never sees or stores the raw token.
 |---|---|
 | `free` | 10 |
 | `plus` | 100 |
-| `max` | 1000 |
+| `max` | 500 |
 
 A quota counts the **unique session ids** a user stores across all
 projects. Re-saving an id the user already has is always allowed (updates

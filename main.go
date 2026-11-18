@@ -49,7 +49,7 @@ import (
 )
 
 // maxUploadBytes bounds a single (possibly gzip-compressed) upload body.
-const maxUploadBytes = 256 << 20
+const maxUploadBytes = 128 << 20
 
 var (
 	validName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
