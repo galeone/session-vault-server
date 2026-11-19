@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/galeone/session-vault-server/compare/v1.3.0...v1.4.0) (2026-11-18)
+
+
+### Features
+
+* cap uploads at 128 MB and max plan at 500 sessions ([#11](https://github.com/galeone/session-vault-server/issues/11)) ([1af6e9a](https://github.com/galeone/session-vault-server/commit/1af6e9a17f50a2d09d131c16633db16ed9d80f0f))
+
 ## [1.3.0](https://github.com/galeone/session-vault-server/compare/v1.2.1...v1.3.0) (2026-11-18)
 
 
