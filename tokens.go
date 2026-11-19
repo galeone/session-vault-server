@@ -20,6 +20,13 @@ type principal struct {
 // hosted service with per-plan session quotas).
 type tokenStore interface {
 	lookup(ctx context.Context, tokenHash string) (principal, bool)
+
+	// recordSession books a stored session (vault_sessions in hosted
+	// mode) so the web app can show per-account usage; forgetSession
+	// removes the entry when the session is deleted. Both are no-ops
+	// for the static env-token store, which has no database.
+	recordSession(ctx context.Context, user, sessionID, project string)
+	forgetSession(ctx context.Context, user, sessionID string)
 }
 
 // planLimits bounds how many sessions a plan may store. The check counts
@@ -42,3 +49,6 @@ func (s staticTokenStore) lookup(_ context.Context, tokenHash string) (principal
 	user, ok := s.tokens[tokenHash]
 	return principal{user: user}, ok
 }
+
+func (s staticTokenStore) recordSession(context.Context, string, string, string) {}
+func (s staticTokenStore) forgetSession(context.Context, string, string)           {}
