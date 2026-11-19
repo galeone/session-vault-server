@@ -134,6 +134,7 @@ Packaging sources live in `packaging/` (`arch/PKGBUILD`, `debian/`,
 | `SESSION_VAULT_LOG_DIR` | — | Directory for the daily log files |
 | `SESSION_VAULT_LOG_FILE` | — | Log to this file instead of the daily log |
 | `SESSION_VAULT_DB_DSN` | — | Postgres DSN; when set, tokens and plans come from the database instead of the env vars above (hosted mode) |
+| `SESSION_VAULT_UPGRADE_URL` | — | Page that raises plan limits; offered as `upgrade_url` in the 402 `session limit reached` error (hosted mode) |
 
 At least one token must be configured. Each token maps to a user, and every
 user only ever sees their own sessions. Tokens are compared by SHA-256 hash;
@@ -206,8 +207,11 @@ are free); only a *new* session is refused once the cap is hit, with HTTP
 402 and a JSON body the client can relay to the user:
 
 ```json
-{"error": "session limit reached", "plan": "free", "limit": 10, "used": 10}
+{"error": "session limit reached", "plan": "free", "limit": 10, "used": 10, "upgrade_url": "https://your.vault.example/account"}
 ```
+
+The `upgrade_url` field is only present when `SESSION_VAULT_UPGRADE_URL` is
+set (a self-hosted deployment has no billing page to point at).
 
 Listing, downloading, and deleting are never blocked by the quota. A plan
 value the server doesn't know is fail-closed (HTTP 403 + server log), so a
