@@ -24,9 +24,10 @@
 // Hosted mode (see tokens_pg.go) also honors:
 //	SESSION_VAULT_DB_DSN        Postgres DSN; tokens and plans come from the
 //	                            database instead of the env vars above
-//	SESSION_VAULT_UPGRADE_URL   page that raises plan limits; offered as
-//	                            upgrade_url in the 402 "session limit
-//	                            reached" error
+//	SESSION_VAULT_BASE_URL      base URL of the session-vault-web app (the
+//	                            same value its pages show); when set, the
+//	                            402 "session limit reached" error offers
+//	                            <base>/account as upgrade_url
 //
 // Compute a token hash with: printf '%s' "$TOKEN" | sha256sum
 //
@@ -90,6 +91,16 @@ type server struct {
 	upgradeURL string
 }
 
+// upgradeURLFor derives the page that raises plan limits from the web
+// app's base URL. Empty when there is no web app (self-hosted):
+// the 402 must never invent a URL.
+func upgradeURLFor(baseURL string) string {
+	if baseURL == "" {
+		return ""
+	}
+	return strings.TrimRight(baseURL, "/") + "/account"
+}
+
 var version = "dev"
 
 func main() {
@@ -123,7 +134,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	s := &server{dataDir: dataDir, tokens: store, maxUpload: maxUploadBytes, upgradeURL: os.Getenv("SESSION_VAULT_UPGRADE_URL")}
+	s := &server{dataDir: dataDir, tokens: store, maxUpload: maxUploadBytes, upgradeURL: upgradeURLFor(os.Getenv("SESSION_VAULT_BASE_URL"))}
+
 	if sweeper, ok := store.(interface {
 		expiredUsers(ctx context.Context) ([]string, error)
 	}); ok {
