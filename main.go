@@ -414,6 +414,12 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 	}
 	s.mu.Unlock()
 
+	// Usage bookkeeping (hosted mode only; no-op for env tokens). A
+	// failure here must not fail the upload — the blob is stored and the
+	// disk stays the source of truth for quotas; only the web app's
+	// used/limit display would lag until the next save or delete.
+	s.tokens.recordSession(r.Context(), p.user, id, project)
+
 	writeJSON(w, http.StatusCreated, meta)
 }
 
@@ -490,6 +496,9 @@ func (s *server) delete(w http.ResponseWriter, r *http.Request, p principal) {
 			return
 		}
 	}
+	// Drop the usage entry too (no-op for env tokens).
+	s.tokens.forgetSession(r.Context(), p.user, id)
+
 	writeJSON(w, http.StatusOK, map[string]int{"deleted": len(matches)})
 }
 

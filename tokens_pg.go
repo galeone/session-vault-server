@@ -44,6 +44,14 @@ import (
 //
 //	CREATE INDEX vault_tokens_user_idx ON vault_tokens (user_id);
 //
+//	CREATE TABLE vault_sessions (
+//		username   TEXT NOT NULL REFERENCES vault_users(username) ON DELETE CASCADE,
+//		session_id TEXT NOT NULL,
+//		project    TEXT NOT NULL DEFAULT '',
+//		updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+//		PRIMARY KEY (username, session_id)
+//	);
+//
 // token_hash stores the lowercase hex sha256 of the bearer token — the
 // vault never sees or stores the raw token.
 type pgTokenStore struct{ db *sql.DB }
@@ -99,6 +107,29 @@ func (s *pgTokenStore) lookup(ctx context.Context, tokenHash string) (principal,
 		p.deleteAt = &t
 	}
 	return p, true
+}
+
+// recordSession books a stored session so the web app can show
+// per-account usage; re-saving the same id only bumps updated_at.
+func (s *pgTokenStore) recordSession(ctx context.Context, user, sessionID, project string) {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO vault_sessions (username, session_id, project, updated_at)
+			VALUES ($1, $2, $3, now())
+			ON CONFLICT (username, session_id)
+			DO UPDATE SET project = EXCLUDED.project, updated_at = now()`,
+		user, sessionID, project)
+	if err != nil {
+		slog.Error("recording the stored session", "user", user, "session", sessionID, "error", err)
+	}
+}
+
+// forgetSession drops the usage entry for a deleted session.
+func (s *pgTokenStore) forgetSession(ctx context.Context, user, sessionID string) {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM vault_sessions WHERE username = $1 AND session_id = $2`,
+		user, sessionID); err != nil {
+		slog.Error("forgetting the stored session", "user", user, "session", sessionID, "error", err)
+	}
 }
 
 // purgeUser deletes the account row; vault_tokens and vault_sessions

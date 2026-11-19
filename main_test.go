@@ -38,6 +38,9 @@ func (s planStore) lookup(_ context.Context, h string) (principal, bool) {
 	return p, ok
 }
 
+func (s planStore) recordSession(context.Context, string, string, string) {}
+func (s planStore) forgetSession(context.Context, string, string)           {}
+
 // uploadBody posts a session through the vault API and returns the status
 // and parsed JSON body.
 func uploadBody(t *testing.T, ts *httptest.Server, token, id, project string) (int, map[string]any) {
@@ -52,6 +55,49 @@ func uploadBody(t *testing.T, ts *httptest.Server, token, id, project string) (i
 		t.Fatalf("parsing %d body: %v", resp.StatusCode, err)
 	}
 	return resp.StatusCode, body
+}
+
+// recordingStore is a planStore that also logs the usage bookkeeping
+// calls, to prove upload and delete reach the token store.
+type recordingStore struct {
+	planStore
+	recorded []string
+	forgotten []string
+}
+
+func (s *recordingStore) recordSession(_ context.Context, user, id, project string) {
+	s.recorded = append(s.recorded, user+"/"+id+"@"+project)
+}
+
+func (s *recordingStore) forgetSession(_ context.Context, user, id string) {
+	s.forgotten = append(s.forgotten, user+"/"+id)
+}
+
+func TestUploadAndDeleteBookkeeping(t *testing.T) {
+	store := &recordingStore{planStore: planStore{m: map[string]principal{hashToken("tok"): {user: "u"}}}}
+	s := &server{dataDir: t.TempDir(), tokens: store, maxUpload: maxUploadBytes}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+
+	if code, _ := uploadBody(t, ts, "tok", "abc", "proj1"); code != http.StatusCreated {
+		t.Fatalf("upload = %d, want 201", code)
+	}
+	// Re-save: still booked (the upsert bumps updated_at server-side).
+	if code, _ := uploadBody(t, ts, "tok", "abc", "proj1"); code != http.StatusCreated {
+		t.Fatalf("re-save = %d, want 201", code)
+	}
+	if len(store.recorded) != 2 || store.recorded[0] != "u/abc@proj1" {
+		t.Fatalf("recorded = %v, want two u/abc@proj1 entries", store.recorded)
+	}
+
+	resp := doReq(t, ts, http.MethodDelete, ts.URL+"/api/v1/sessions/abc", "tok", nil, nil)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete = %d, want 200", resp.StatusCode)
+	}
+	if len(store.forgotten) != 1 || store.forgotten[0] != "u/abc" {
+		t.Fatalf("forgotten = %v, want [u/abc]", store.forgotten)
+	}
 }
 
 func TestPlanQuota(t *testing.T) {
