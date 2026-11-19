@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/galeone/session-vault-server/compare/v1.5.0...v1.6.0) (2026-11-19)
+
+
+### Features
+
+* stamp vault_tokens.last_used_at on every authenticated request ([#15](https://github.com/galeone/session-vault-server/issues/15)) ([8e473e1](https://github.com/galeone/session-vault-server/commit/8e473e1e9e2ac34f5d69a19d89c11a82048415e9))
+
 ## [1.5.0](https://github.com/galeone/session-vault-server/compare/v1.4.0...v1.5.0) (2026-11-19)
 
 
