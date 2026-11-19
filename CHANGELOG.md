@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/galeone/session-vault-server/compare/v1.6.0...v1.7.0) (2026-11-19)
+
+
+### Features
+
+* offer an upgrade URL in the session-limit 402 ([#17](https://github.com/galeone/session-vault-server/issues/17)) ([13de38d](https://github.com/galeone/session-vault-server/commit/13de38d267812a503c910236f407b9d57b9402e3))
+
 ## [1.6.0](https://github.com/galeone/session-vault-server/compare/v1.5.0...v1.6.0) (2026-11-19)
 
 
