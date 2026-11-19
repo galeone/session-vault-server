@@ -106,6 +106,13 @@ func (s *pgTokenStore) lookup(ctx context.Context, tokenHash string) (principal,
 		t := deleteAt.Time
 		p.deleteAt = &t
 	}
+	// Bookkeeping for the web app's "last used" column; a failure here
+	// must not fail the request.
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE vault_tokens SET last_used_at = now() WHERE token_hash = $1`,
+		tokenHash); err != nil {
+		slog.Error("token last_used update", "error", err, "token_hash", tokenHash)
+	}
 	return p, true
 }
 
