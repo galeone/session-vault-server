@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/galeone/session-vault-server/compare/v1.4.0...v1.5.0) (2026-11-19)
+
+
+### Features
+
+* record stored sessions in vault_sessions for usage bookkeeping ([#13](https://github.com/galeone/session-vault-server/issues/13)) ([86edf28](https://github.com/galeone/session-vault-server/commit/86edf28065f6e955f5f7d106d031bc27d247a981))
+
 ## [1.4.0](https://github.com/galeone/session-vault-server/compare/v1.3.0...v1.4.0) (2026-11-18)
 
 
