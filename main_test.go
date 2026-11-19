@@ -106,9 +106,10 @@ func TestPlanQuota(t *testing.T) {
 	t.Cleanup(func() { planLimits["free"] = limit })
 
 	s := &server{
-		dataDir:   t.TempDir(),
-		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "u", plan: "free"}}},
-		maxUpload: maxUploadBytes,
+		dataDir:    t.TempDir(),
+		tokens:     planStore{m: map[string]principal{hashToken("tok"): {user: "u", plan: "free"}}},
+		maxUpload:  maxUploadBytes,
+		upgradeURL: "https://vault.example/account",
 	}
 	ts := httptest.NewServer(routes(s))
 	t.Cleanup(ts.Close)
@@ -127,6 +128,10 @@ func TestPlanQuota(t *testing.T) {
 	if body["plan"] != "free" || body["limit"] != float64(2) || body["used"] != float64(2) {
 		t.Fatalf("quota body = %v, want plan=free limit=2 used=2", body)
 	}
+	// The configured upgrade URL is offered to the client.
+	if body["upgrade_url"] != "https://vault.example/account" {
+		t.Fatalf("quota body upgrade_url = %v, want the configured URL", body["upgrade_url"])
+	}
 	// ...while re-saving an existing id is always allowed.
 	if code, _ := uploadBody(t, ts, "tok", "a2", "p1"); code != http.StatusCreated {
 		t.Fatalf("re-save of existing id = %d, want 201", code)
@@ -141,6 +146,33 @@ func TestPlanQuota(t *testing.T) {
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list at the cap = %d, want 200", resp.StatusCode)
+	}
+}
+
+// A deployment with no upgrade URL (self-hosted, no billing page) must
+// not invent one: the 402 keeps its details but omits the key.
+func TestQuotaWithoutUpgradeURL(t *testing.T) {
+	limit := planLimits["free"]
+	planLimits["free"] = 1
+	t.Cleanup(func() { planLimits["free"] = limit })
+
+	s := &server{
+		dataDir:   t.TempDir(),
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "u", plan: "free"}}},
+		maxUpload: maxUploadBytes,
+	}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+
+	if code, _ := uploadBody(t, ts, "tok", "a1", "p1"); code != http.StatusCreated {
+		t.Fatalf("first upload = %d, want 201", code)
+	}
+	code, body := uploadBody(t, ts, "tok", "a2", "p1")
+	if code != http.StatusPaymentRequired {
+		t.Fatalf("upload over the cap = %d, want 402 (body %v)", code, body)
+	}
+	if _, ok := body["upgrade_url"]; ok {
+		t.Fatalf("quota body = %v, must not offer an upgrade URL when none is configured", body)
 	}
 }
 

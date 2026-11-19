@@ -21,6 +21,13 @@
 //	SESSION_VAULT_LOG_DIR       directory for the daily log files
 //	SESSION_VAULT_LOG_FILE      log to this file instead of the daily log
 //
+// Hosted mode (see tokens_pg.go) also honors:
+//	SESSION_VAULT_DB_DSN        Postgres DSN; tokens and plans come from the
+//	                            database instead of the env vars above
+//	SESSION_VAULT_UPGRADE_URL   page that raises plan limits; offered as
+//	                            upgrade_url in the 402 "session limit
+//	                            reached" error
+//
 // Compute a token hash with: printf '%s' "$TOKEN" | sha256sum
 //
 // Storage layout: <data>/<user>/<project>/<session-id>.data (the blob,
@@ -78,6 +85,9 @@ type server struct {
 	// the decompressed size when the body is gzip. Configurable so tests can
 	// use a small cap.
 	maxUpload int64
+	// upgradeURL, when set, is passed to clients that hit a plan limit so
+	// they can point the user at the page that raises the cap.
+	upgradeURL string
 }
 
 var version = "dev"
@@ -113,7 +123,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	s := &server{dataDir: dataDir, tokens: store, maxUpload: maxUploadBytes}
+	s := &server{dataDir: dataDir, tokens: store, maxUpload: maxUploadBytes, upgradeURL: os.Getenv("SESSION_VAULT_UPGRADE_URL")}
 	if sweeper, ok := store.(interface {
 		expiredUsers(ctx context.Context) ([]string, error)
 	}); ok {
@@ -329,12 +339,18 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 			return
 		}
 		if len(ids) >= limit && !ids[id] {
-			writeJSON(w, http.StatusPaymentRequired, map[string]any{
+			resp := map[string]any{
 				"error": "session limit reached",
 				"plan":  p.plan,
 				"limit": limit,
 				"used":  len(ids),
-			})
+			}
+			// Only when configured: a self-hosted deployment has no
+			// billing page to point at.
+			if s.upgradeURL != "" {
+				resp["upgrade_url"] = s.upgradeURL
+			}
+			writeJSON(w, http.StatusPaymentRequired, resp)
 			return
 		}
 	}
