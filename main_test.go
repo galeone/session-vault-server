@@ -109,7 +109,7 @@ func TestPlanQuota(t *testing.T) {
 		dataDir:    t.TempDir(),
 		tokens:     planStore{m: map[string]principal{hashToken("tok"): {user: "u", plan: "free"}}},
 		maxUpload:  maxUploadBytes,
-		upgradeURL: "https://vault.example/account",
+		upgradeURL: upgradeURLFor("https://vault.example"),
 	}
 	ts := httptest.NewServer(routes(s))
 	t.Cleanup(ts.Close)
@@ -146,6 +146,21 @@ func TestPlanQuota(t *testing.T) {
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list at the cap = %d, want 200", resp.StatusCode)
+	}
+}
+
+// upgradeURLFor derives the upgrade page from the web app's base URL and
+// invents nothing when there is no web app.
+func TestUpgradeURLFor(t *testing.T) {
+	cases := []struct{ base, want string }{
+		{"", ""},
+		{"https://vault.example", "https://vault.example/account"},
+		{"https://vault.example/", "https://vault.example/account"},
+	}
+	for _, c := range cases {
+		if got := upgradeURLFor(c.base); got != c.want {
+			t.Errorf("upgradeURLFor(%q) = %q, want %q", c.base, got, c.want)
+		}
 	}
 }
 
