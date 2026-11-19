@@ -113,6 +113,24 @@ except its state directories, and `StateDirectory=` is what creates the
 directory and chowns it to the ephemeral `session-vault` user on every
 boot. Without it the server would start and immediately fail to write.
 
+Postgres ordering (hosted mode, `postgresql.service` on the same host):
+
+```sh
+sudo systemctl edit session-vault-server
+```
+
+```ini
+[Unit]
+Wants=postgresql.service
+After=postgresql.service
+```
+
+Only relevant when `SESSION_VAULT_DB_DSN` is set: without it the vault
+simply starts first, fails to connect, and is retried every two seconds
+until Postgres is up — it self-heals, it just burns a few cycles at boot.
+`Wants=`, not `Requires=`: if Postgres stops later (or is restarted),
+the vault must not be dragged down with it.
+
 Then `sudo systemctl restart session-vault-server` (no `daemon-reload`
 needed — `systemctl edit` reloads the daemon for you). Verify with
 `systemctl show session-vault-server -p Environment` and
