@@ -67,8 +67,9 @@ sudo chmod 0600 /etc/session-vault/session-vault.env
 sudo systemctl restart session-vault-server
 ```
 
-- Data: `/var/lib/session-vault/` (owned by the dynamic user), logs there
-  under `logs/` and in the journal: `journalctl -u session-vault-server -f`.
+- Data: `/var/lib/session-vault/` (owned by the dynamic user). Logs:
+  `/var/log/session-vault/`, outside the data directory so no user name
+  can collide with it, and the journal: `journalctl -u session-vault-server -f`.
 - Liveness: `curl http://localhost:8080/healthz`.
 - The server is multi-user: add further tokens to
   `/etc/session-vault/session-vault.env` (`SESSION_VAULT_TOKENS` /
@@ -103,7 +104,6 @@ sudo systemctl edit session-vault-server
 ```ini
 [Service]
 Environment=SESSION_VAULT_DATA=/var/lib/my-vault
-Environment=SESSION_VAULT_LOG_DIR=/var/lib/my-vault/logs
 StateDirectory=my-vault
 ```
 
@@ -350,8 +350,8 @@ Plain files on disk — back it up like any directory.
 The server logs structured text (slog) to stdout and to a daily file named
 `YYYY-MM-DD.log` in the log directory (created 0700, files 0600):
 `$SESSION_VAULT_LOG_DIR`, or `$XDG_STATE_HOME/session-vault/logs`, or
-`~/.local/state/session-vault/logs`. Log files older than 21 days are
-deleted on startup. If the log file cannot be opened, the server logs to
+`~/.local/state/session-vault/logs`. The server switches to a new file at
+midnight; files older than 21 days are deleted then and on startup. If the log file cannot be opened, the server logs to
 stdout only and keeps running.
 
 ## Security notes

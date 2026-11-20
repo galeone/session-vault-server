@@ -665,3 +665,46 @@ func TestDownloadPrefersNewestExistingCopy(t *testing.T) {
 		t.Fatalf("download = %q, want the newest copy", got)
 	}
 }
+
+func TestSafeNamespace(t *testing.T) {
+	for _, ok := range []string{"default", "alice", "bob@example.com", "a.b+tag@example.co.uk", "u-0123abcd"} {
+		if !safeNamespace(ok) {
+			t.Errorf("safeNamespace(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", ".hidden", "x/../victim@example.com", `a\b`, "/abs", "a\x00b", `"z/../bob"@x.com`} {
+		if safeNamespace(bad) {
+			t.Errorf("safeNamespace(%q) = true, want false", bad)
+		}
+	}
+}
+
+// A store-supplied user name that would escape its directory is refused
+// before any path is built from it.
+func TestUnsafeUserNameIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim@example.com", "p")
+	if err := os.MkdirAll(victim, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(victim, "sid.data"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{
+		dataDir:   dir,
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "x/../victim@example.com"}}},
+		maxUpload: maxUploadBytes,
+	}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions/sid", "tok", nil, nil)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("download with an unsafe user name = %d, want 403", resp.StatusCode)
+	}
+	s.purgeAccount(context.Background(), "x/../victim@example.com")
+	if _, err := os.Stat(filepath.Join(victim, "sid.data")); err != nil {
+		t.Fatalf("purge with an unsafe user name touched another user's data: %v", err)
+	}
+}

@@ -209,6 +209,16 @@ func (l *limitedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// safeNamespace reports whether user can name a directory directly under
+// the data dir: one local path component, not hidden, not "." or "..".
+// Email-shaped names (the hosted app's legacy usernames) pass.
+func safeNamespace(user string) bool {
+	return user != "" &&
+		!strings.HasPrefix(user, ".") &&
+		!strings.ContainsAny(user, `/\`+"\x00") &&
+		filepath.IsLocal(user)
+}
+
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -269,6 +279,15 @@ func (s *server) auth(next func(http.ResponseWriter, *http.Request, principal)) 
 			http.Error(rw, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if !safeNamespace(p.user) {
+			// The user name is the storage directory. Hosted usernames
+			// come from the database (written by the web app), so they
+			// are checked here rather than trusted: a name like
+			// "x/../victim" would resolve into another user's data.
+			slog.Error("refusing a user name that is not a single path component", "user", p.user)
+			http.Error(rw, "account misconfigured", http.StatusForbidden)
+			return
+		}
 		if p.deleteAt != nil && !p.deleteAt.After(time.Now()) {
 			// The account's 30-day grace period is over: purge the stored
 			// sessions and the account row right away, then refuse. Eager
@@ -294,6 +313,10 @@ func (s *server) auth(next func(http.ResponseWriter, *http.Request, principal)) 
 // token store is Postgres-backed, deletes the account row (vault_tokens and
 // vault_sessions cascade via their foreign keys). It is idempotent.
 func (s *server) purgeAccount(ctx context.Context, user string) {
+	if !safeNamespace(user) {
+		slog.Error("refusing to purge a user name that is not a single path component", "user", user)
+		return
+	}
 	if err := os.RemoveAll(filepath.Join(s.dataDir, user)); err != nil {
 		slog.Error("removing stored sessions", "user", user, "error", err)
 		return
