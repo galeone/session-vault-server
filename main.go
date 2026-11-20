@@ -357,9 +357,13 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 	}
 
 	if name == "" {
-		// An unnamed re-save of an already-labeled session keeps its label.
-		if old, err := readMeta(filepath.Join(s.dataDir, p.user, project, id+".meta.json")); err == nil {
-			name = old.Name
+		// An unnamed re-save of an already-labeled session keeps its
+		// label, wherever the previous save lives: a session restored on
+		// another machine is re-saved under that machine's project.
+		if prev, ok := s.newestCopy(p.user, id); ok {
+			if old, err := readMeta(metaPath(prev)); err == nil {
+				name = old.Name
+			}
 		}
 	}
 	body := io.Reader(http.MaxBytesReader(w, r.Body, s.maxUpload))
@@ -433,6 +437,12 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		internalError(w, err)
 		return
 	}
+	// A session id is one session: this save supersedes any copy stored
+	// under another project (the client remaps a restored session into the
+	// project of the machine it runs on, so re-saving it there changes
+	// X-Project). Keeping the old copies made list show duplicates and
+	// download serve whichever project sorted first.
+	s.removeOtherCopies(p.user, id, project)
 	s.mu.Unlock()
 
 	// Usage bookkeeping (hosted mode only; no-op for env tokens). A
@@ -591,7 +601,50 @@ func (s *server) findSession(w http.ResponseWriter, id, user string) (string, bo
 		http.Error(w, "session not found", http.StatusNotFound)
 		return "", false
 	}
-	return matches[0], true
+	return newestOf(matches), true
+}
+
+// newestCopy returns the blob path of the user's most recently uploaded
+// copy of id, if any.
+func (s *server) newestCopy(user, id string) (string, bool) {
+	matches, err := filepath.Glob(filepath.Join(s.dataDir, user, "*", id+".data"))
+	if err != nil || len(matches) == 0 {
+		return "", false
+	}
+	return newestOf(matches), true
+}
+
+// newestOf picks the blob whose meta records the latest upload. Several
+// copies only exist for data stored before uploads started superseding
+// other projects' copies; a missing or unreadable meta ranks last.
+func newestOf(blobs []string) string {
+	best, bestAt := blobs[0], time.Time{}
+	for _, b := range blobs {
+		if m, err := readMeta(metaPath(b)); err == nil && m.UploadedAt.After(bestAt) {
+			best, bestAt = b, m.UploadedAt
+		}
+	}
+	return best
+}
+
+// removeOtherCopies deletes the user's copies of id stored under projects
+// other than keep. Best effort: a leftover copy is only stale, and
+// download already prefers the newest one.
+func (s *server) removeOtherCopies(user, id, keep string) {
+	matches, err := filepath.Glob(filepath.Join(s.dataDir, user, "*", id+".data"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if filepath.Base(filepath.Dir(m)) == keep {
+			continue
+		}
+		for _, f := range []string{m, metaPath(m)} {
+			if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+				slog.Error("removing a superseded session copy", "user", user, "path", f, "error", err)
+			}
+		}
+	}
 }
 
 func metaPath(blobPath string) string {

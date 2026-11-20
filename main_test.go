@@ -592,3 +592,76 @@ func TestPurgedAccountIsRefused(t *testing.T) {
 		t.Fatalf("user data dir still exists after purge: %v", err)
 	}
 }
+
+// Re-saving a session under another project (a session restored on a
+// second machine) supersedes the old copy: one list entry, the label
+// kept, and download serves the new bytes.
+func TestResaveUnderOtherProjectSupersedes(t *testing.T) {
+	ts, _ := testServer(t, map[string]string{"tok": "u"}, maxUploadBytes)
+	up := func(project, body, name string) {
+		t.Helper()
+		h := map[string]string{"X-Session-Id": "sid", "X-Project": project}
+		if name != "" {
+			h["X-Name"] = name
+		}
+		resp := doReq(t, ts, http.MethodPost, ts.URL+"/api/v1/sessions", "tok", []byte(body), h)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("upload to %s = %d", project, resp.StatusCode)
+		}
+	}
+	up("-data-me-repo", "from linux", "feature")
+	up("-Users-me-repo", "from mac", "")
+
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions", "tok", nil, nil)
+	var metas []Meta
+	if err := json.NewDecoder(resp.Body).Decode(&metas); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(metas) != 1 {
+		t.Fatalf("list = %+v, want one entry", metas)
+	}
+	if metas[0].Project != "-Users-me-repo" || metas[0].Name != "feature" {
+		t.Fatalf("meta = %+v, want the new project and the kept label", metas[0])
+	}
+
+	resp = doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions/sid", "tok", nil, nil)
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(got) != "from mac" {
+		t.Fatalf("download = %q, want the newest save", got)
+	}
+}
+
+// Duplicates left by older servers: download serves the newest copy, not
+// whichever project sorts first.
+func TestDownloadPrefersNewestExistingCopy(t *testing.T) {
+	dir := t.TempDir()
+	s := &server{dataDir: dir, tokens: staticTokenStore{tokens: map[string]string{hashToken("tok"): "u"}}, maxUpload: maxUploadBytes}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+	write := func(project, body string, at time.Time) {
+		d := filepath.Join(dir, "u", project)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "sid.data"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m, _ := json.Marshal(Meta{SessionID: "sid", Project: project, UploadedAt: at})
+		if err := os.WriteFile(filepath.Join(d, "sid.meta.json"), m, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	write("-a-first", "old", now.Add(-time.Hour))
+	write("-z-last", "new", now)
+
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions/sid", "tok", nil, nil)
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(got) != "new" {
+		t.Fatalf("download = %q, want the newest copy", got)
+	}
+}
