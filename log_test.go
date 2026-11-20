@@ -38,7 +38,7 @@ func TestCleanupOldLogs(t *testing.T) {
 		}
 	}
 
-	cleanupOldLogs(dir)
+	cleanupOldLogs(dir, time.Now())
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -111,5 +111,42 @@ func TestOpenLogFileAppends(t *testing.T) {
 	}
 	if string(data) != "line\nline\n" {
 		t.Errorf("expected two appended lines, got %q", string(data))
+	}
+}
+
+func TestDailyLogRotatesAtMidnight(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 3, 1, 23, 59, 0, 0, time.UTC)
+	d, err := newDailyLog(dir, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.f.Close() })
+	// A file past the retention, relative to the clock, gets pruned on
+	// rotation even though it was younger at startup.
+	stale := filepath.Join(dir, "2026-02-09.log")
+	if err := os.WriteFile(stale, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.Write([]byte("before\n")); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute) // 2026-03-02
+	if _, err := d.Write([]byte("after\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, want := range map[string]string{"2026-03-01.log": "before\n", "2026-03-02.log": "after\n"} {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("%s should have been pruned on rotation", stale)
 	}
 }

@@ -39,7 +39,9 @@ import (
 //		user_id    BIGINT NOT NULL REFERENCES vault_users(id) ON DELETE CASCADE,
 //		token_hash TEXT NOT NULL UNIQUE,
 //		label      TEXT NOT NULL DEFAULT '',
-//		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+//		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+//		-- bumped by lookup on every authenticated request
+//		last_used_at TIMESTAMPTZ
 //	);
 //
 //	CREATE INDEX vault_tokens_user_idx ON vault_tokens (user_id);
