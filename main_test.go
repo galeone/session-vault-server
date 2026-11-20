@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -39,7 +40,7 @@ func (s planStore) lookup(_ context.Context, h string) (principal, bool) {
 }
 
 func (s planStore) recordSession(context.Context, string, string, string) {}
-func (s planStore) forgetSession(context.Context, string, string)           {}
+func (s planStore) forgetSession(context.Context, string, string)         {}
 
 // uploadBody posts a session through the vault API and returns the status
 // and parsed JSON body.
@@ -61,7 +62,7 @@ func uploadBody(t *testing.T, ts *httptest.Server, token, id, project string) (i
 // calls, to prove upload and delete reach the token store.
 type recordingStore struct {
 	planStore
-	recorded []string
+	recorded  []string
 	forgotten []string
 }
 
@@ -146,6 +147,46 @@ func TestPlanQuota(t *testing.T) {
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list at the cap = %d, want 200", resp.StatusCode)
+	}
+}
+
+// Concurrent uploads of new ids must not overshoot the plan limit: the
+// quota is re-checked under the commit lock.
+func TestPlanQuotaConcurrentUploads(t *testing.T) {
+	limit := planLimits["free"]
+	planLimits["free"] = 2
+	t.Cleanup(func() { planLimits["free"] = limit })
+
+	s := &server{
+		dataDir:   t.TempDir(),
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "u", plan: "free"}}},
+		maxUpload: maxUploadBytes,
+	}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+
+	var wg sync.WaitGroup
+	for i := range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Plain client calls: t.Fatal must not run off the test goroutine.
+			req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/sessions", bytes.NewReader([]byte("line")))
+			req.Header.Set("Authorization", "Bearer tok")
+			req.Header.Set("X-Session-Id", fmt.Sprintf("c%d", i))
+			req.Header.Set("X-Project", "p")
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
+	ids, err := s.sessionIDs("u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("stored %d sessions, want exactly the limit (2)", len(ids))
 	}
 }
 

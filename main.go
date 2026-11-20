@@ -22,6 +22,7 @@
 //	SESSION_VAULT_LOG_FILE      log to this file instead of the daily log
 //
 // Hosted mode (see tokens_pg.go) also honors:
+//
 //	SESSION_VAULT_DB_DSN        Postgres DSN; tokens and plans come from the
 //	                            database instead of the env vars above
 //	SESSION_VAULT_BASE_URL      base URL of the session-vault-web app (the
@@ -144,7 +145,20 @@ func main() {
 
 	slog.Info("session-vault-server listening",
 		"version", version, "addr", addr, "data_dir", dataDir)
-	if err := http.ListenAndServe(addr, routes(s)); err != nil {
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: routes(s),
+		// Slow or stalled clients must not pin connections forever. The
+		// header deadline is tight; the body and response deadlines are
+		// generous because a 128 MiB session over a slow uplink is
+		// legitimately slow.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Minute,
+		WriteTimeout:      30 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("server", "error", err)
 		os.Exit(1)
 	}
@@ -335,36 +349,11 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 	// Plan quotas (hosted mode): a re-save of an id the user already
 	// stores is always allowed; a brand-new session is refused once the
 	// user has stored `limit` unique ids. Env-token principals have no
-	// plan and are unlimited.
-	if p.plan != "" {
-		limit, known := planLimits[p.plan]
-		if !known {
-			// Fail closed: a plan the server doesn't know must never
-			// silently mean "unlimited".
-			slog.Error("unknown plan on account", "user", p.user, "plan", p.plan)
-			http.Error(w, "unknown plan on account", http.StatusForbidden)
-			return
-		}
-		ids, err := s.sessionIDs(p.user)
-		if err != nil {
-			internalError(w, err)
-			return
-		}
-		if len(ids) >= limit && !ids[id] {
-			resp := map[string]any{
-				"error": "session limit reached",
-				"plan":  p.plan,
-				"limit": limit,
-				"used":  len(ids),
-			}
-			// Only when configured: a self-hosted deployment has no
-			// billing page to point at.
-			if s.upgradeURL != "" {
-				resp["upgrade_url"] = s.upgradeURL
-			}
-			writeJSON(w, http.StatusPaymentRequired, resp)
-			return
-		}
+	// plan and are unlimited. Checked here to refuse before reading the
+	// body, and again under the commit lock below, so concurrent uploads
+	// of new ids cannot together overshoot the limit.
+	if s.refuseOverQuota(w, p, id) {
+		return
 	}
 
 	if name == "" {
@@ -430,6 +419,10 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 	// atomic meta write happen under the same lock, so a re-upload of the
 	// same id can never leave a blob and a stale meta from different writes.
 	s.mu.Lock()
+	if s.refuseOverQuota(w, p, id) {
+		s.mu.Unlock()
+		return
+	}
 	if err := os.Rename(tmp.Name(), filepath.Join(dir, id+".data")); err != nil {
 		s.mu.Unlock()
 		internalError(w, err)
@@ -449,6 +442,43 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 	s.tokens.recordSession(r.Context(), p.user, id, project)
 
 	writeJSON(w, http.StatusCreated, meta)
+}
+
+// refuseOverQuota writes the error response and returns true when storing
+// id would take the user past their plan's session limit.
+func (s *server) refuseOverQuota(w http.ResponseWriter, p principal, id string) bool {
+	if p.plan == "" {
+		return false
+	}
+	limit, known := planLimits[p.plan]
+	if !known {
+		// Fail closed: a plan the server doesn't know must never
+		// silently mean "unlimited".
+		slog.Error("unknown plan on account", "user", p.user, "plan", p.plan)
+		http.Error(w, "unknown plan on account", http.StatusForbidden)
+		return true
+	}
+	ids, err := s.sessionIDs(p.user)
+	if err != nil {
+		internalError(w, err)
+		return true
+	}
+	if len(ids) < limit || ids[id] {
+		return false
+	}
+	resp := map[string]any{
+		"error": "session limit reached",
+		"plan":  p.plan,
+		"limit": limit,
+		"used":  len(ids),
+	}
+	// Only when configured: a self-hosted deployment has no billing
+	// page to point at.
+	if s.upgradeURL != "" {
+		resp["upgrade_url"] = s.upgradeURL
+	}
+	writeJSON(w, http.StatusPaymentRequired, resp)
+	return true
 }
 
 func (s *server) list(w http.ResponseWriter, _ *http.Request, p principal) {
