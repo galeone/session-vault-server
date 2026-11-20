@@ -288,7 +288,7 @@ All endpoints (except `/healthz`) require `Authorization: Bearer <token>`.
 
 | Method & path | Description |
 |---|---|
-| `POST /api/v1/sessions` | Upload a session blob. Headers: `X-Session-Id`, `X-Project` (required, `[A-Za-z0-9_-]+`), `X-Cwd` (optional), `X-Name` (optional user-chosen label, `[A-Za-z0-9_-]{1,64}`; an unnamed re-upload keeps the existing label), `Content-Encoding: gzip` (optional transport compression, decompressed before storage), `X-Encrypted: age+gzip` (required: plaintext uploads are refused with 400, so the server only ever stores ciphertext). Body: the `age(gzip(transcript))` ciphertext. Returns the stored metadata. Re-uploading the same id overwrites (last write wins). |
+| `POST /api/v1/sessions` | Upload a session blob. Headers: `X-Session-Id`, `X-Project` (required, `[A-Za-z0-9_-]+`), `X-Cwd` (optional), `X-Name` (optional user-chosen label, `[A-Za-z0-9_-]{1,64}`; an unnamed re-upload keeps the existing label), `X-Encrypted: age+gzip` (required: plaintext uploads are refused with 400, so the server only ever stores ciphertext). Body: the `age(gzip(transcript))` ciphertext. No `Content-Encoding` (415): the body is stored byte for byte. Returns the stored metadata. Re-uploading the same id overwrites (last write wins). |
 | `GET /api/v1/sessions` | List the caller's sessions as a JSON array of metadata, newest first |
 | `GET /api/v1/sessions/{id}` | Download one blob exactly as stored (`application/octet-stream`, with `X-Encrypted: age+gzip`) |
 | `GET /api/v1/sessions/{id}/meta` | Metadata for one session |
@@ -316,10 +316,11 @@ client uses it to restore downloads to the right place.
 ### curl examples
 
 ```sh
-# upload
-gzip -c session.jsonl | curl -X POST http://localhost:8080/api/v1/sessions \
+# upload (age-encrypted with your key's public recipient, like the client)
+gzip -c session.jsonl | age -r "$(age-keygen -y ~/.config/session-vault/age.key)" \
+  | curl -X POST http://localhost:8080/api/v1/sessions \
   -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Encoding: gzip" \
+  -H "X-Encrypted: age+gzip" \
   -H "X-Session-Id: 557e996b-4c2a-4214-9442-9c625d9f1791" \
   -H "X-Project: -data-pgaleone-ue-handbook" \
   --data-binary @-
@@ -330,7 +331,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/sessions
 # download
 curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:8080/api/v1/sessions/557e996b-4c2a-4214-9442-9c625d9f1791 \
-  -o session.jsonl
+  | age -d -i ~/.config/session-vault/age.key | gunzip > session.jsonl
 ```
 
 ## Storage layout
@@ -368,7 +369,7 @@ stdout only and keeps running.
   server's environment, unit files, or `/proc/<pid>/environ`. Generate long
   random tokens (`openssl rand -hex 32`); rotate by swapping the hash and
   restarting.
-- Uploads are capped at 256 MiB per request, both for the compressed body and for the decompressed size (defense against gzip bombs).
+- Uploads are capped at 128 MiB per request and stored byte for byte (no transport decompression, so no gzip-bomb surface).
 - Session files and their metadata are written with mode 0600 inside a 0700 directory.
 
 ## CI & releases

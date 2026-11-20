@@ -34,12 +34,11 @@
 // Compute a token hash with: printf '%s' "$TOKEN" | sha256sum
 //
 // Storage layout: <data>/<user>/<project>/<session-id>.data (the blob,
-// exactly as uploaded after transport decompression) plus a
+// exactly as uploaded: age ciphertext) plus a
 // <session-id>.meta.json sidecar.
 package main
 
 import (
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -58,7 +57,7 @@ import (
 	"time"
 )
 
-// maxUploadBytes bounds a single (possibly gzip-compressed) upload body.
+// maxUploadBytes bounds a single upload body (the age ciphertext).
 const maxUploadBytes = 128 << 20
 
 // encryptionScheme is the only upload the server accepts: the client's
@@ -81,8 +80,8 @@ type Meta struct {
 	Cwd        string    `json:"cwd,omitempty"`
 	Size       int64     `json:"size"`
 	UploadedAt time.Time `json:"uploaded_at"`
-	// Encrypted records the client-declared encryption scheme (e.g.
-	// "age+gzip"). Empty means the blob is a plaintext transcript.
+	// Encrypted is the encryption scheme of the blob: always "age+gzip",
+	// the only one uploads are accepted with.
 	Encrypted string `json:"encrypted,omitempty"`
 }
 
@@ -90,9 +89,8 @@ type server struct {
 	dataDir string
 	tokens  tokenStore
 	mu      sync.Mutex // serializes blob+meta commits (fixes interleaved re-uploads)
-	// maxUpload bounds a single (possibly gzip-compressed) upload body, and
-	// the decompressed size when the body is gzip. Configurable so tests can
-	// use a small cap.
+	// maxUpload bounds a single upload body. Configurable so tests can use
+	// a small cap.
 	maxUpload int64
 	// upgradeURL, when set, is passed to clients that hit a plan limit so
 	// they can point the user at the page that raises the cap.
@@ -193,27 +191,6 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// limitedReader reads from r and fails once the cumulative byte count
-// exceeds cap. It bounds decompressed gzip uploads so a small compressed
-// body can't expand into a disk-filling stream (gzip bomb).
-type limitedReader struct {
-	r   io.Reader
-	cap int64
-	n   int64
-}
-
-func (l *limitedReader) Read(p []byte) (int, error) {
-	if l.n >= l.cap {
-		return 0, fmt.Errorf("decompressed upload exceeds %d bytes", l.cap)
-	}
-	if int64(len(p)) > l.cap-l.n {
-		p = p[:l.cap-l.n]
-	}
-	n, err := l.r.Read(p)
-	l.n += int64(n)
-	return n, err
 }
 
 // safeNamespace reports whether user can name a directory directly under
@@ -380,6 +357,13 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		http.Error(w, "uploads must be end-to-end encrypted (X-Encrypted: "+encryptionScheme+")", http.StatusBadRequest)
 		return
 	}
+	// The body is stored byte for byte. Transport compression only ever
+	// served plaintext uploads (age ciphertext does not compress), so a
+	// Content-Encoding is refused rather than stored still encoded.
+	if ce := r.Header.Get("Content-Encoding"); ce != "" && ce != "identity" {
+		http.Error(w, "Content-Encoding is not supported: upload the age ciphertext as is", http.StatusUnsupportedMediaType)
+		return
+	}
 	// Plan quotas (hosted mode): a re-save of an id the user already
 	// stores is always allowed; a brand-new session is refused once the
 	// user has stored `limit` unique ids. Env-token principals have no
@@ -400,16 +384,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 			}
 		}
 	}
-	body := io.Reader(http.MaxBytesReader(w, r.Body, s.maxUpload))
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		gz, err := gzip.NewReader(body)
-		if err != nil {
-			http.Error(w, "invalid gzip body", http.StatusBadRequest)
-			return
-		}
-		defer func() { _ = gz.Close() }()
-		body = &limitedReader{r: gz, cap: s.maxUpload}
-	}
+	body := http.MaxBytesReader(w, r.Body, s.maxUpload)
 
 	// 0700: ciphertext only, but the metadata (cwd, labels) is readable.
 	dir := filepath.Join(s.dataDir, p.user, project)

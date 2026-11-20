@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -294,19 +293,6 @@ func doReq(t *testing.T, ts *httptest.Server, method, url, token string, body []
 	return resp
 }
 
-func gzipBytes(t *testing.T, data []byte) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if _, err := gz.Write(data); err != nil {
-		t.Fatal(err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
 func TestLoadTokens(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		t.Setenv("SESSION_VAULT_TOKEN", "")
@@ -387,15 +373,13 @@ func TestHealthz(t *testing.T) {
 func TestUploadDownloadRoundtrip(t *testing.T) {
 	ts, _ := testServer(t, map[string]string{"tok": "default"}, maxUploadBytes)
 
-	payload := []byte(`{"a":1}`)
-	gz := gzipBytes(t, payload)
+	payload := []byte("age-encryption.org/v1 ciphertext")
 
-	resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", gz, map[string]string{
-		"Content-Encoding": "gzip",
-		"X-Session-Id":     "abc",
-		"X-Project":        "proj",
-		"X-Cwd":            "/tmp/proj",
-		"X-Name":           "my-name",
+	resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", payload, map[string]string{
+		"X-Session-Id": "abc",
+		"X-Project":    "proj",
+		"X-Cwd":        "/tmp/proj",
+		"X-Name":       "my-name",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
@@ -466,19 +450,23 @@ func TestUploadInvalidHeaders(t *testing.T) {
 	}
 }
 
-func TestUploadGzipBomb(t *testing.T) {
-	// cap of 100 bytes decompressed; payload expands to 1000.
+// Uploads are stored byte for byte, so a transport encoding is refused
+// instead of being stored still encoded; an oversized body is refused too.
+func TestUploadRefusesContentEncodingAndOversize(t *testing.T) {
 	ts, _ := testServer(t, map[string]string{"tok": "default"}, 100)
-	payload := bytes.Repeat([]byte("x"), 1000)
-	gz := gzipBytes(t, payload)
-	resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", gz, map[string]string{
-		"Content-Encoding": "gzip",
-		"X-Session-Id":     "abc",
-		"X-Project":        "proj",
+	resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", []byte("ciphertext"), map[string]string{
+		"Content-Encoding": "gzip", "X-Session-Id": "abc", "X-Project": "proj",
 	})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("Content-Encoding: gzip = %d, want 415", resp.StatusCode)
+	}
+	resp = doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", bytes.Repeat([]byte("x"), 1000), map[string]string{
+		"X-Session-Id": "abc", "X-Project": "proj",
+	})
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("bomb: got %d (%s), want 400", resp.StatusCode, body)
+		t.Fatalf("oversized upload = %d, want 400", resp.StatusCode)
 	}
 }
 
@@ -526,21 +514,6 @@ func TestDownloadNotFound(t *testing.T) {
 	}
 	if resp := doReq(t, ts, "GET", ts.URL+"/api/v1/sessions/../etc", "tok", nil, nil); resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("path traversal: got %d", resp.StatusCode)
-	}
-}
-
-func TestLimitedReader(t *testing.T) {
-	lr := &limitedReader{r: bytes.NewReader(bytes.Repeat([]byte("y"), 50)), cap: 10}
-	buf := make([]byte, 100)
-	n, err := lr.Read(buf)
-	if n != 10 {
-		t.Fatalf("first read: got %d, want 10", n)
-	}
-	if err != nil {
-		t.Fatalf("first read err: %v", err)
-	}
-	if _, err := lr.Read(buf); err == nil {
-		t.Fatal("expected error after cap exceeded")
 	}
 }
 
