@@ -16,6 +16,7 @@ import (
 //
 //	CREATE TABLE vault_users (
 //		id             BIGSERIAL PRIMARY KEY,
+//		-- opaque storage namespace, CHECK (username ~ '^u_[0-9a-f]{24}$')
 //		username       TEXT NOT NULL UNIQUE,
 //		email          TEXT NOT NULL UNIQUE,
 //		plan           TEXT NOT NULL DEFAULT 'free',
