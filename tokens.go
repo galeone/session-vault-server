@@ -51,4 +51,4 @@ func (s staticTokenStore) lookup(_ context.Context, tokenHash string) (principal
 }
 
 func (s staticTokenStore) recordSession(context.Context, string, string, string) {}
-func (s staticTokenStore) forgetSession(context.Context, string, string)           {}
+func (s staticTokenStore) forgetSession(context.Context, string, string)         {}

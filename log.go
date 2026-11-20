@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,9 +24,18 @@ const logRetention = 21 * 24 * time.Hour
 func initLogger() {
 	var w io.Writer = os.Stdout
 
-	if f, err := openLogFile(os.Getenv("SESSION_VAULT_LOG_DIR"), os.Getenv("SESSION_VAULT_LOG_FILE")); err == nil {
-		// The file stays open for the life of the process; the OS closes
-		// it on exit.
+	var f io.Writer
+	var err error
+	if logFile := os.Getenv("SESSION_VAULT_LOG_FILE"); logFile != "" {
+		// An explicit file stays open for the life of the process; the
+		// OS closes it on exit.
+		f, err = openLogFile("", logFile)
+	} else {
+		// The daily log switches files at midnight and prunes old ones,
+		// for as long as the server runs.
+		f, err = newDailyLog(os.Getenv("SESSION_VAULT_LOG_DIR"), time.Now)
+	}
+	if err == nil {
 		w = io.MultiWriter(os.Stdout, f)
 	} else {
 		slog.Error("log file unavailable, using stdout only", "error", err)
@@ -64,30 +74,93 @@ func openLogFile(dir, logFile string) (*os.File, error) {
 		}
 		return os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	}
-	if dir == "" {
-		base := os.Getenv("XDG_STATE_HOME")
-		if base == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, err
-			}
-			base = filepath.Join(home, ".local", "state")
-		}
-		dir = filepath.Join(base, "session-vault", "logs")
+	dir, err := logDir(dir)
+	if err != nil {
+		return nil, err
 	}
+	return openDailyFile(dir, time.Now())
+}
+
+// logDir returns dir, or the default log directory when dir is empty.
+func logDir(dir string) (string, error) {
+	if dir != "" {
+		return dir, nil
+	}
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "session-vault", "logs"), nil
+}
+
+// openDailyFile prunes old logs in dir and opens the file for day t.
+func openDailyFile(dir string, t time.Time) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	cleanupOldLogs(dir)
-	return os.OpenFile(filepath.Join(dir, time.Now().Format("2006-01-02")+".log"),
+	cleanupOldLogs(dir, t)
+	return os.OpenFile(filepath.Join(dir, t.Format("2006-01-02")+".log"),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+}
+
+// dailyLog is an io.Writer over YYYY-MM-DD.log files: each write goes to
+// the file of the current day, switching (and pruning files past the
+// retention) when the date changes. Opening the file once at startup
+// would put every line of a long-running server into its first day's
+// file and never prune anything.
+type dailyLog struct {
+	dir string
+	now func() time.Time
+
+	mu  sync.Mutex
+	day string
+	f   *os.File
+}
+
+func newDailyLog(dir string, now func() time.Time) (*dailyLog, error) {
+	dir, err := logDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	d := &dailyLog{dir: dir, now: now}
+	if err := d.rotate(now()); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+func (d *dailyLog) rotate(t time.Time) error {
+	f, err := openDailyFile(d.dir, t)
+	if err != nil {
+		return err
+	}
+	if d.f != nil {
+		_ = d.f.Close()
+	}
+	d.f, d.day = f, t.Format("2006-01-02")
+	return nil
+}
+
+func (d *dailyLog) Write(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if t := d.now(); t.Format("2006-01-02") != d.day {
+		// On failure keep writing to the previous day's file rather
+		// than dropping the line (logging the error here would recurse).
+		_ = d.rotate(t)
+	}
+	return d.f.Write(p)
 }
 
 // cleanupOldLogs deletes *.log files whose date in the filename is older
 // than the retention period. Files that don't match the YYYY-MM-DD.log
 // naming are left untouched.
-func cleanupOldLogs(dir string) {
-	cutoff := time.Now().Add(-logRetention)
+func cleanupOldLogs(dir string, now time.Time) {
+	cutoff := now.Add(-logRetention)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return

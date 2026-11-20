@@ -13,7 +13,8 @@
 #   (SESSION_VAULT_TOKENS / SESSION_VAULT_TOKEN_HASHES) and each user only
 #   ever sees their own sessions (data/<user>/).
 # - Data lives in /var/lib/session-vault/ (StateDirectory, owned by the
-#   dynamic user), logs in /var/lib/session-vault/logs/ in addition to the
+#   dynamic user), logs in /var/log/session-vault/ (LogsDirectory, kept
+#   outside the data dir so no user name can collide with it) in addition to the
 #   journal: journalctl -u session-vault-server
 # - Port and data directory are configurable: see README.md ("Overriding
 #   the port or data directory"), e.g. via 'systemctl edit
@@ -35,6 +36,7 @@ Group=session-vault
 # StateDirectory owns /var/lib/session-vault for the dynamic user
 # (symlinked in from /var/lib/private/session-vault).
 StateDirectory=session-vault
+LogsDirectory=session-vault
 
 # Server configuration: tokens, addr, log level, ...
 # The defaults below can be overridden with 'systemctl edit
@@ -42,7 +44,7 @@ StateDirectory=session-vault
 # Environment= with the same name wins).
 EnvironmentFile=-/etc/session-vault/session-vault.env
 Environment=SESSION_VAULT_DATA=%S/session-vault
-Environment=SESSION_VAULT_LOG_DIR=%S/session-vault/logs
+Environment=SESSION_VAULT_LOG_DIR=%L/session-vault
 
 ExecStart=/usr/bin/session-vault-server
 

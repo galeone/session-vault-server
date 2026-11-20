@@ -2,7 +2,8 @@
 // session-vault plugin (/save) and serves them back (/fetch).
 //
 // Transcripts are opaque blobs: their JSONL format is internal to Claude Code,
-// and clients may upload them end-to-end encrypted (X-Encrypted header), so
+// and clients upload them end-to-end encrypted (X-Encrypted: age+gzip,
+// required), so
 // the server never parses or inspects them.
 //
 // Configuration (environment variables):
@@ -22,6 +23,7 @@
 //	SESSION_VAULT_LOG_FILE      log to this file instead of the daily log
 //
 // Hosted mode (see tokens_pg.go) also honors:
+//
 //	SESSION_VAULT_DB_DSN        Postgres DSN; tokens and plans come from the
 //	                            database instead of the env vars above
 //	SESSION_VAULT_BASE_URL      base URL of the session-vault-web app (the
@@ -32,12 +34,11 @@
 // Compute a token hash with: printf '%s' "$TOKEN" | sha256sum
 //
 // Storage layout: <data>/<user>/<project>/<session-id>.data (the blob,
-// exactly as uploaded after transport decompression) plus a
+// exactly as uploaded: age ciphertext) plus a
 // <session-id>.meta.json sidecar.
 package main
 
 import (
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -56,8 +57,14 @@ import (
 	"time"
 )
 
-// maxUploadBytes bounds a single (possibly gzip-compressed) upload body.
+// maxUploadBytes bounds a single upload body (the age ciphertext).
 const maxUploadBytes = 128 << 20
+
+// encryptionScheme is the only upload the server accepts: the client's
+// age(gzip(transcript)). Every client save is end-to-end encrypted, so a
+// plaintext upload is a misbehaving client, and refusing it means the
+// server never holds a readable transcript.
+const encryptionScheme = "age+gzip"
 
 var (
 	validName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -73,8 +80,8 @@ type Meta struct {
 	Cwd        string    `json:"cwd,omitempty"`
 	Size       int64     `json:"size"`
 	UploadedAt time.Time `json:"uploaded_at"`
-	// Encrypted records the client-declared encryption scheme (e.g.
-	// "age+gzip"). Empty means the blob is a plaintext transcript.
+	// Encrypted is the encryption scheme of the blob: always "age+gzip",
+	// the only one uploads are accepted with.
 	Encrypted string `json:"encrypted,omitempty"`
 }
 
@@ -82,9 +89,8 @@ type server struct {
 	dataDir string
 	tokens  tokenStore
 	mu      sync.Mutex // serializes blob+meta commits (fixes interleaved re-uploads)
-	// maxUpload bounds a single (possibly gzip-compressed) upload body, and
-	// the decompressed size when the body is gzip. Configurable so tests can
-	// use a small cap.
+	// maxUpload bounds a single upload body. Configurable so tests can use
+	// a small cap.
 	maxUpload int64
 	// upgradeURL, when set, is passed to clients that hit a plan limit so
 	// they can point the user at the page that raises the cap.
@@ -144,7 +150,20 @@ func main() {
 
 	slog.Info("session-vault-server listening",
 		"version", version, "addr", addr, "data_dir", dataDir)
-	if err := http.ListenAndServe(addr, routes(s)); err != nil {
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: routes(s),
+		// Slow or stalled clients must not pin connections forever. The
+		// header deadline is tight; the body and response deadlines are
+		// generous because a 128 MiB session over a slow uplink is
+		// legitimately slow.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Minute,
+		WriteTimeout:      30 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("server", "error", err)
 		os.Exit(1)
 	}
@@ -174,25 +193,14 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// limitedReader reads from r and fails once the cumulative byte count
-// exceeds cap. It bounds decompressed gzip uploads so a small compressed
-// body can't expand into a disk-filling stream (gzip bomb).
-type limitedReader struct {
-	r   io.Reader
-	cap int64
-	n   int64
-}
-
-func (l *limitedReader) Read(p []byte) (int, error) {
-	if l.n >= l.cap {
-		return 0, fmt.Errorf("decompressed upload exceeds %d bytes", l.cap)
-	}
-	if int64(len(p)) > l.cap-l.n {
-		p = p[:l.cap-l.n]
-	}
-	n, err := l.r.Read(p)
-	l.n += int64(n)
-	return n, err
+// safeNamespace reports whether user can name a directory directly under
+// the data dir: one local path component, not hidden, not "." or "..".
+// Email-shaped names (the hosted app's legacy usernames) pass.
+func safeNamespace(user string) bool {
+	return user != "" &&
+		!strings.HasPrefix(user, ".") &&
+		!strings.ContainsAny(user, `/\`+"\x00") &&
+		filepath.IsLocal(user)
 }
 
 func hashToken(token string) string {
@@ -255,6 +263,15 @@ func (s *server) auth(next func(http.ResponseWriter, *http.Request, principal)) 
 			http.Error(rw, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if !safeNamespace(p.user) {
+			// The user name is the storage directory. Hosted usernames
+			// come from the database (written by the web app), so they
+			// are checked here rather than trusted: a name like
+			// "x/../victim" would resolve into another user's data.
+			slog.Error("refusing a user name that is not a single path component", "user", p.user)
+			http.Error(rw, "account misconfigured", http.StatusForbidden)
+			return
+		}
 		if p.deleteAt != nil && !p.deleteAt.After(time.Now()) {
 			// The account's 30-day grace period is over: purge the stored
 			// sessions and the account row right away, then refuse. Eager
@@ -280,6 +297,10 @@ func (s *server) auth(next func(http.ResponseWriter, *http.Request, principal)) 
 // token store is Postgres-backed, deletes the account row (vault_tokens and
 // vault_sessions cascade via their foreign keys). It is idempotent.
 func (s *server) purgeAccount(ctx context.Context, user string) {
+	if !safeNamespace(user) {
+		slog.Error("refusing to purge a user name that is not a single path component", "user", user)
+		return
+	}
 	if err := os.RemoveAll(filepath.Join(s.dataDir, user)); err != nil {
 		slog.Error("removing stored sessions", "user", user, "error", err)
 		return
@@ -332,59 +353,40 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		http.Error(w, "invalid X-Name header (want [A-Za-z0-9_-], max 64 chars)", http.StatusBadRequest)
 		return
 	}
+	if r.Header.Get("X-Encrypted") != encryptionScheme {
+		http.Error(w, "uploads must be end-to-end encrypted (X-Encrypted: "+encryptionScheme+")", http.StatusBadRequest)
+		return
+	}
+	// The body is stored byte for byte. Transport compression only ever
+	// served plaintext uploads (age ciphertext does not compress), so a
+	// Content-Encoding is refused rather than stored still encoded.
+	if ce := r.Header.Get("Content-Encoding"); ce != "" && ce != "identity" {
+		http.Error(w, "Content-Encoding is not supported: upload the age ciphertext as is", http.StatusUnsupportedMediaType)
+		return
+	}
 	// Plan quotas (hosted mode): a re-save of an id the user already
 	// stores is always allowed; a brand-new session is refused once the
 	// user has stored `limit` unique ids. Env-token principals have no
-	// plan and are unlimited.
-	if p.plan != "" {
-		limit, known := planLimits[p.plan]
-		if !known {
-			// Fail closed: a plan the server doesn't know must never
-			// silently mean "unlimited".
-			slog.Error("unknown plan on account", "user", p.user, "plan", p.plan)
-			http.Error(w, "unknown plan on account", http.StatusForbidden)
-			return
-		}
-		ids, err := s.sessionIDs(p.user)
-		if err != nil {
-			internalError(w, err)
-			return
-		}
-		if len(ids) >= limit && !ids[id] {
-			resp := map[string]any{
-				"error": "session limit reached",
-				"plan":  p.plan,
-				"limit": limit,
-				"used":  len(ids),
-			}
-			// Only when configured: a self-hosted deployment has no
-			// billing page to point at.
-			if s.upgradeURL != "" {
-				resp["upgrade_url"] = s.upgradeURL
-			}
-			writeJSON(w, http.StatusPaymentRequired, resp)
-			return
-		}
+	// plan and are unlimited. Checked here to refuse before reading the
+	// body, and again under the commit lock below, so concurrent uploads
+	// of new ids cannot together overshoot the limit.
+	if s.refuseOverQuota(w, p, id) {
+		return
 	}
 
 	if name == "" {
-		// An unnamed re-save of an already-labeled session keeps its label.
-		if old, err := readMeta(filepath.Join(s.dataDir, p.user, project, id+".meta.json")); err == nil {
-			name = old.Name
+		// An unnamed re-save of an already-labeled session keeps its
+		// label, wherever the previous save lives: a session restored on
+		// another machine is re-saved under that machine's project.
+		if prev, ok := s.newestCopy(p.user, id); ok {
+			if old, err := readMeta(metaPath(prev)); err == nil {
+				name = old.Name
+			}
 		}
 	}
-	body := io.Reader(http.MaxBytesReader(w, r.Body, s.maxUpload))
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		gz, err := gzip.NewReader(body)
-		if err != nil {
-			http.Error(w, "invalid gzip body", http.StatusBadRequest)
-			return
-		}
-		defer func() { _ = gz.Close() }()
-		body = &limitedReader{r: gz, cap: s.maxUpload}
-	}
+	body := http.MaxBytesReader(w, r.Body, s.maxUpload)
 
-	// 0700: the directory may hold plaintext transcripts.
+	// 0700: ciphertext only, but the metadata (cwd, labels) is readable.
 	dir := filepath.Join(s.dataDir, p.user, project)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		internalError(w, err)
@@ -418,7 +420,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		Cwd:        r.Header.Get("X-Cwd"),
 		Size:       size,
 		UploadedAt: time.Now().UTC(),
-		Encrypted:  r.Header.Get("X-Encrypted"),
+		Encrypted:  encryptionScheme,
 	}
 	metaBytes, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -430,6 +432,10 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 	// atomic meta write happen under the same lock, so a re-upload of the
 	// same id can never leave a blob and a stale meta from different writes.
 	s.mu.Lock()
+	if s.refuseOverQuota(w, p, id) {
+		s.mu.Unlock()
+		return
+	}
 	if err := os.Rename(tmp.Name(), filepath.Join(dir, id+".data")); err != nil {
 		s.mu.Unlock()
 		internalError(w, err)
@@ -440,6 +446,12 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		internalError(w, err)
 		return
 	}
+	// A session id is one session: this save supersedes any copy stored
+	// under another project (the client remaps a restored session into the
+	// project of the machine it runs on, so re-saving it there changes
+	// X-Project). Keeping the old copies made list show duplicates and
+	// download serve whichever project sorted first.
+	s.removeOtherCopies(p.user, id, project)
 	s.mu.Unlock()
 
 	// Usage bookkeeping (hosted mode only; no-op for env tokens). A
@@ -449,6 +461,43 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 	s.tokens.recordSession(r.Context(), p.user, id, project)
 
 	writeJSON(w, http.StatusCreated, meta)
+}
+
+// refuseOverQuota writes the error response and returns true when storing
+// id would take the user past their plan's session limit.
+func (s *server) refuseOverQuota(w http.ResponseWriter, p principal, id string) bool {
+	if p.plan == "" {
+		return false
+	}
+	limit, known := planLimits[p.plan]
+	if !known {
+		// Fail closed: a plan the server doesn't know must never
+		// silently mean "unlimited".
+		slog.Error("unknown plan on account", "user", p.user, "plan", p.plan)
+		http.Error(w, "unknown plan on account", http.StatusForbidden)
+		return true
+	}
+	ids, err := s.sessionIDs(p.user)
+	if err != nil {
+		internalError(w, err)
+		return true
+	}
+	if len(ids) < limit || ids[id] {
+		return false
+	}
+	resp := map[string]any{
+		"error": "session limit reached",
+		"plan":  p.plan,
+		"limit": limit,
+		"used":  len(ids),
+	}
+	// Only when configured: a self-hosted deployment has no billing
+	// page to point at.
+	if s.upgradeURL != "" {
+		resp["upgrade_url"] = s.upgradeURL
+	}
+	writeJSON(w, http.StatusPaymentRequired, resp)
+	return true
 }
 
 func (s *server) list(w http.ResponseWriter, _ *http.Request, p principal) {
@@ -476,12 +525,9 @@ func (s *server) download(w http.ResponseWriter, r *http.Request, p principal) {
 	if !ok {
 		return
 	}
-	contentType := "application/x-ndjson"
-	if m, err := readMeta(metaPath(path)); err == nil && m.Encrypted != "" {
-		contentType = "application/octet-stream"
-		w.Header().Set("X-Encrypted", m.Encrypted)
-	}
-	w.Header().Set("Content-Type", contentType)
+	// Every stored blob is ciphertext (plaintext uploads are refused).
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Encrypted", encryptionScheme)
 	http.ServeFile(w, r, path)
 }
 
@@ -561,7 +607,50 @@ func (s *server) findSession(w http.ResponseWriter, id, user string) (string, bo
 		http.Error(w, "session not found", http.StatusNotFound)
 		return "", false
 	}
-	return matches[0], true
+	return newestOf(matches), true
+}
+
+// newestCopy returns the blob path of the user's most recently uploaded
+// copy of id, if any.
+func (s *server) newestCopy(user, id string) (string, bool) {
+	matches, err := filepath.Glob(filepath.Join(s.dataDir, user, "*", id+".data"))
+	if err != nil || len(matches) == 0 {
+		return "", false
+	}
+	return newestOf(matches), true
+}
+
+// newestOf picks the blob whose meta records the latest upload. Several
+// copies only exist for data stored before uploads started superseding
+// other projects' copies; a missing or unreadable meta ranks last.
+func newestOf(blobs []string) string {
+	best, bestAt := blobs[0], time.Time{}
+	for _, b := range blobs {
+		if m, err := readMeta(metaPath(b)); err == nil && m.UploadedAt.After(bestAt) {
+			best, bestAt = b, m.UploadedAt
+		}
+	}
+	return best
+}
+
+// removeOtherCopies deletes the user's copies of id stored under projects
+// other than keep. Best effort: a leftover copy is only stale, and
+// download already prefers the newest one.
+func (s *server) removeOtherCopies(user, id, keep string) {
+	matches, err := filepath.Glob(filepath.Join(s.dataDir, user, "*", id+".data"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if filepath.Base(filepath.Dir(m)) == keep {
+			continue
+		}
+		for _, f := range []string{m, metaPath(m)} {
+			if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+				slog.Error("removing a superseded session copy", "user", user, "path", f, "error", err)
+			}
+		}
+	}
 }
 
 func metaPath(blobPath string) string {

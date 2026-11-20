@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -39,7 +39,7 @@ func (s planStore) lookup(_ context.Context, h string) (principal, bool) {
 }
 
 func (s planStore) recordSession(context.Context, string, string, string) {}
-func (s planStore) forgetSession(context.Context, string, string)           {}
+func (s planStore) forgetSession(context.Context, string, string)         {}
 
 // uploadBody posts a session through the vault API and returns the status
 // and parsed JSON body.
@@ -61,7 +61,7 @@ func uploadBody(t *testing.T, ts *httptest.Server, token, id, project string) (i
 // calls, to prove upload and delete reach the token store.
 type recordingStore struct {
 	planStore
-	recorded []string
+	recorded  []string
 	forgotten []string
 }
 
@@ -149,6 +149,47 @@ func TestPlanQuota(t *testing.T) {
 	}
 }
 
+// Concurrent uploads of new ids must not overshoot the plan limit: the
+// quota is re-checked under the commit lock.
+func TestPlanQuotaConcurrentUploads(t *testing.T) {
+	limit := planLimits["free"]
+	planLimits["free"] = 2
+	t.Cleanup(func() { planLimits["free"] = limit })
+
+	s := &server{
+		dataDir:   t.TempDir(),
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "u", plan: "free"}}},
+		maxUpload: maxUploadBytes,
+	}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+
+	var wg sync.WaitGroup
+	for i := range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Plain client calls: t.Fatal must not run off the test goroutine.
+			req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/sessions", bytes.NewReader([]byte("line")))
+			req.Header.Set("Authorization", "Bearer tok")
+			req.Header.Set("X-Session-Id", fmt.Sprintf("c%d", i))
+			req.Header.Set("X-Project", "p")
+			req.Header.Set("X-Encrypted", encryptionScheme)
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
+	ids, err := s.sessionIDs("u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("stored %d sessions, want exactly the limit (2)", len(ids))
+	}
+}
+
 // upgradeURLFor derives the upgrade page from the web app's base URL and
 // invents nothing when there is no web app.
 func TestUpgradeURLFor(t *testing.T) {
@@ -233,27 +274,23 @@ func doReq(t *testing.T, ts *httptest.Server, method, url, token string, body []
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	// Uploads carry the encryption header the client always sends,
+	// unless the test sets it itself (an empty value means "omit it").
+	if method == http.MethodPost {
+		if _, set := headers["X-Encrypted"]; !set {
+			req.Header.Set("X-Encrypted", encryptionScheme)
+		}
+	}
 	for k, v := range headers {
-		req.Header.Set(k, v)
+		if v != "" {
+			req.Header.Set(k, v)
+		}
 	}
 	resp, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return resp
-}
-
-func gzipBytes(t *testing.T, data []byte) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if _, err := gz.Write(data); err != nil {
-		t.Fatal(err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
 }
 
 func TestLoadTokens(t *testing.T) {
@@ -336,15 +373,13 @@ func TestHealthz(t *testing.T) {
 func TestUploadDownloadRoundtrip(t *testing.T) {
 	ts, _ := testServer(t, map[string]string{"tok": "default"}, maxUploadBytes)
 
-	payload := []byte(`{"a":1}`)
-	gz := gzipBytes(t, payload)
+	payload := []byte("age-encryption.org/v1 ciphertext")
 
-	resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", gz, map[string]string{
-		"Content-Encoding": "gzip",
-		"X-Session-Id":     "abc",
-		"X-Project":        "proj",
-		"X-Cwd":            "/tmp/proj",
-		"X-Name":           "my-name",
+	resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", payload, map[string]string{
+		"X-Session-Id": "abc",
+		"X-Project":    "proj",
+		"X-Cwd":        "/tmp/proj",
+		"X-Name":       "my-name",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
@@ -370,7 +405,7 @@ func TestUploadDownloadRoundtrip(t *testing.T) {
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("payload mismatch: got %q, want %q", got, payload)
 	}
-	if ct := resp.Header.Get("Content-Type"); ct != "application/x-ndjson" {
+	if ct := resp.Header.Get("Content-Type"); ct != "application/octet-stream" {
 		t.Fatalf("content-type: got %q", ct)
 	}
 }
@@ -415,19 +450,23 @@ func TestUploadInvalidHeaders(t *testing.T) {
 	}
 }
 
-func TestUploadGzipBomb(t *testing.T) {
-	// cap of 100 bytes decompressed; payload expands to 1000.
+// Uploads are stored byte for byte, so a transport encoding is refused
+// instead of being stored still encoded; an oversized body is refused too.
+func TestUploadRefusesContentEncodingAndOversize(t *testing.T) {
 	ts, _ := testServer(t, map[string]string{"tok": "default"}, 100)
-	payload := bytes.Repeat([]byte("x"), 1000)
-	gz := gzipBytes(t, payload)
-	resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", gz, map[string]string{
-		"Content-Encoding": "gzip",
-		"X-Session-Id":     "abc",
-		"X-Project":        "proj",
+	resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", []byte("ciphertext"), map[string]string{
+		"Content-Encoding": "gzip", "X-Session-Id": "abc", "X-Project": "proj",
 	})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("Content-Encoding: gzip = %d, want 415", resp.StatusCode)
+	}
+	resp = doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", bytes.Repeat([]byte("x"), 1000), map[string]string{
+		"X-Session-Id": "abc", "X-Project": "proj",
+	})
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("bomb: got %d (%s), want 400", resp.StatusCode, body)
+		t.Fatalf("oversized upload = %d, want 400", resp.StatusCode)
 	}
 }
 
@@ -475,21 +514,6 @@ func TestDownloadNotFound(t *testing.T) {
 	}
 	if resp := doReq(t, ts, "GET", ts.URL+"/api/v1/sessions/../etc", "tok", nil, nil); resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("path traversal: got %d", resp.StatusCode)
-	}
-}
-
-func TestLimitedReader(t *testing.T) {
-	lr := &limitedReader{r: bytes.NewReader(bytes.Repeat([]byte("y"), 50)), cap: 10}
-	buf := make([]byte, 100)
-	n, err := lr.Read(buf)
-	if n != 10 {
-		t.Fatalf("first read: got %d, want 10", n)
-	}
-	if err != nil {
-		t.Fatalf("first read err: %v", err)
-	}
-	if _, err := lr.Read(buf); err == nil {
-		t.Fatal("expected error after cap exceeded")
 	}
 }
 
@@ -549,5 +573,145 @@ func TestPurgedAccountIsRefused(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "gone@example.com")); !os.IsNotExist(err) {
 		t.Fatalf("user data dir still exists after purge: %v", err)
+	}
+}
+
+// Re-saving a session under another project (a session restored on a
+// second machine) supersedes the old copy: one list entry, the label
+// kept, and download serves the new bytes.
+func TestResaveUnderOtherProjectSupersedes(t *testing.T) {
+	ts, _ := testServer(t, map[string]string{"tok": "u"}, maxUploadBytes)
+	up := func(project, body, name string) {
+		t.Helper()
+		h := map[string]string{"X-Session-Id": "sid", "X-Project": project}
+		if name != "" {
+			h["X-Name"] = name
+		}
+		resp := doReq(t, ts, http.MethodPost, ts.URL+"/api/v1/sessions", "tok", []byte(body), h)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("upload to %s = %d", project, resp.StatusCode)
+		}
+	}
+	up("-data-me-repo", "from linux", "feature")
+	up("-Users-me-repo", "from mac", "")
+
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions", "tok", nil, nil)
+	var metas []Meta
+	if err := json.NewDecoder(resp.Body).Decode(&metas); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(metas) != 1 {
+		t.Fatalf("list = %+v, want one entry", metas)
+	}
+	if metas[0].Project != "-Users-me-repo" || metas[0].Name != "feature" {
+		t.Fatalf("meta = %+v, want the new project and the kept label", metas[0])
+	}
+
+	resp = doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions/sid", "tok", nil, nil)
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(got) != "from mac" {
+		t.Fatalf("download = %q, want the newest save", got)
+	}
+}
+
+// Duplicates left by older servers: download serves the newest copy, not
+// whichever project sorts first.
+func TestDownloadPrefersNewestExistingCopy(t *testing.T) {
+	dir := t.TempDir()
+	s := &server{dataDir: dir, tokens: staticTokenStore{tokens: map[string]string{hashToken("tok"): "u"}}, maxUpload: maxUploadBytes}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+	write := func(project, body string, at time.Time) {
+		d := filepath.Join(dir, "u", project)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "sid.data"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m, _ := json.Marshal(Meta{SessionID: "sid", Project: project, UploadedAt: at})
+		if err := os.WriteFile(filepath.Join(d, "sid.meta.json"), m, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	write("-a-first", "old", now.Add(-time.Hour))
+	write("-z-last", "new", now)
+
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions/sid", "tok", nil, nil)
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(got) != "new" {
+		t.Fatalf("download = %q, want the newest copy", got)
+	}
+}
+
+func TestSafeNamespace(t *testing.T) {
+	for _, ok := range []string{"default", "alice", "bob@example.com", "a.b+tag@example.co.uk", "u-0123abcd"} {
+		if !safeNamespace(ok) {
+			t.Errorf("safeNamespace(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", ".hidden", "x/../victim@example.com", `a\b`, "/abs", "a\x00b", `"z/../bob"@x.com`} {
+		if safeNamespace(bad) {
+			t.Errorf("safeNamespace(%q) = true, want false", bad)
+		}
+	}
+}
+
+// A store-supplied user name that would escape its directory is refused
+// before any path is built from it.
+func TestUnsafeUserNameIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim@example.com", "p")
+	if err := os.MkdirAll(victim, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(victim, "sid.data"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{
+		dataDir:   dir,
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "x/../victim@example.com"}}},
+		maxUpload: maxUploadBytes,
+	}
+	ts := httptest.NewServer(routes(s))
+	t.Cleanup(ts.Close)
+
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions/sid", "tok", nil, nil)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("download with an unsafe user name = %d, want 403", resp.StatusCode)
+	}
+	s.purgeAccount(context.Background(), "x/../victim@example.com")
+	if _, err := os.Stat(filepath.Join(victim, "sid.data")); err != nil {
+		t.Fatalf("purge with an unsafe user name touched another user's data: %v", err)
+	}
+}
+
+// Only age+gzip uploads are stored: a missing or different scheme is
+// refused before anything touches the disk.
+func TestUploadRequiresEncryption(t *testing.T) {
+	ts, _ := testServer(t, map[string]string{"tok": "u"}, maxUploadBytes)
+	for _, scheme := range []string{"", "none", "AGE+GZIP", "age"} {
+		resp := doReq(t, ts, http.MethodPost, ts.URL+"/api/v1/sessions", "tok", []byte(`{"plain":1}`), map[string]string{
+			"X-Session-Id": "abc", "X-Project": "proj", "X-Encrypted": scheme,
+		})
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("X-Encrypted=%q: status %d, want 400", scheme, resp.StatusCode)
+		}
+	}
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions", "tok", nil, nil)
+	var metas []Meta
+	if err := json.NewDecoder(resp.Body).Decode(&metas); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(metas) != 0 {
+		t.Fatalf("refused uploads were stored: %+v", metas)
 	}
 }
