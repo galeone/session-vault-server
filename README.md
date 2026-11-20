@@ -6,8 +6,9 @@ Claude Code plugin lives in the
 the current session here, `/fetch` lists and downloads it back on any machine.
 
 Transcripts are treated as opaque blobs — their JSONL format is internal to
-Claude Code, and clients are expected to upload them end-to-end encrypted
-(age), so the server never parses or inspects them.
+Claude Code, and clients must upload them end-to-end encrypted (age;
+plaintext uploads are refused), so the server never parses, inspects or
+can read them.
 
 ## Build & run
 
@@ -287,9 +288,9 @@ All endpoints (except `/healthz`) require `Authorization: Bearer <token>`.
 
 | Method & path | Description |
 |---|---|
-| `POST /api/v1/sessions` | Upload a session blob. Headers: `X-Session-Id`, `X-Project` (required, `[A-Za-z0-9_-]+`), `X-Cwd` (optional), `X-Name` (optional user-chosen label, `[A-Za-z0-9_-]{1,64}`; an unnamed re-upload keeps the existing label), `Content-Encoding: gzip` (optional transport compression, decompressed before storage), `X-Encrypted` (optional client-side encryption scheme, e.g. `age+gzip`, stored verbatim in the metadata). Body: the transcript, or its ciphertext. Returns the stored metadata. Re-uploading the same id overwrites (last write wins). |
+| `POST /api/v1/sessions` | Upload a session blob. Headers: `X-Session-Id`, `X-Project` (required, `[A-Za-z0-9_-]+`), `X-Cwd` (optional), `X-Name` (optional user-chosen label, `[A-Za-z0-9_-]{1,64}`; an unnamed re-upload keeps the existing label), `Content-Encoding: gzip` (optional transport compression, decompressed before storage), `X-Encrypted: age+gzip` (required: plaintext uploads are refused with 400, so the server only ever stores ciphertext). Body: the `age(gzip(transcript))` ciphertext. Returns the stored metadata. Re-uploading the same id overwrites (last write wins). |
 | `GET /api/v1/sessions` | List the caller's sessions as a JSON array of metadata, newest first |
-| `GET /api/v1/sessions/{id}` | Download one blob exactly as stored (`application/x-ndjson`, or `application/octet-stream` + `X-Encrypted` header when encrypted) |
+| `GET /api/v1/sessions/{id}` | Download one blob exactly as stored (`application/octet-stream`, with `X-Encrypted: age+gzip`) |
 | `GET /api/v1/sessions/{id}/meta` | Metadata for one session |
 | `DELETE /api/v1/sessions/{id}` | Remove a session (blob and metadata). Scoped to the caller's own sessions; if the id exists under several projects, all copies are removed. Returns `{"deleted": N}` |
 | `GET /healthz` | Liveness check, no auth |
@@ -339,7 +340,7 @@ data/
 └── <user>/
     └── <project>/
         ├── <session-id>.data         the blob, exactly as uploaded
-        │                             (plaintext JSONL, or age ciphertext)
+        │                             (age ciphertext)
         └── <session-id>.meta.json    upload metadata
 ```
 
@@ -356,11 +357,11 @@ stdout only and keeps running.
 
 ## Security notes
 
-- **Encryption at rest is the client's job**: with the plugin's age key
-  configured, `.data` files are ciphertext the server cannot decrypt. Without
-  it, transcripts (which can contain source code, pasted secrets, and command
-  output) are stored in plaintext — treat the data directory as sensitive
-  either way.
+- **Encryption is end-to-end and enforced**: the client encrypts with its
+  age key and the server refuses any upload not marked `age+gzip`, so
+  `.data` files are ciphertext the server cannot decrypt. Session metadata
+  (ids, project slugs, original cwd, labels) is not encrypted — treat the
+  data directory as sensitive.
 - Run behind TLS (e.g. a reverse proxy such as Caddy or nginx): bearer tokens
   travel in a header.
 - Prefer `SESSION_VAULT_TOKEN_HASHES` so plaintext tokens never appear in the

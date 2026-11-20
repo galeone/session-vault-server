@@ -175,6 +175,7 @@ func TestPlanQuotaConcurrentUploads(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer tok")
 			req.Header.Set("X-Session-Id", fmt.Sprintf("c%d", i))
 			req.Header.Set("X-Project", "p")
+			req.Header.Set("X-Encrypted", encryptionScheme)
 			if resp, err := http.DefaultClient.Do(req); err == nil {
 				_ = resp.Body.Close()
 			}
@@ -274,8 +275,17 @@ func doReq(t *testing.T, ts *httptest.Server, method, url, token string, body []
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	// Uploads carry the encryption header the client always sends,
+	// unless the test sets it itself (an empty value means "omit it").
+	if method == http.MethodPost {
+		if _, set := headers["X-Encrypted"]; !set {
+			req.Header.Set("X-Encrypted", encryptionScheme)
+		}
+	}
 	for k, v := range headers {
-		req.Header.Set(k, v)
+		if v != "" {
+			req.Header.Set(k, v)
+		}
 	}
 	resp, err := ts.Client().Do(req)
 	if err != nil {
@@ -411,7 +421,7 @@ func TestUploadDownloadRoundtrip(t *testing.T) {
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("payload mismatch: got %q, want %q", got, payload)
 	}
-	if ct := resp.Header.Get("Content-Type"); ct != "application/x-ndjson" {
+	if ct := resp.Header.Get("Content-Type"); ct != "application/octet-stream" {
 		t.Fatalf("content-type: got %q", ct)
 	}
 }
@@ -706,5 +716,29 @@ func TestUnsafeUserNameIsRefused(t *testing.T) {
 	s.purgeAccount(context.Background(), "x/../victim@example.com")
 	if _, err := os.Stat(filepath.Join(victim, "sid.data")); err != nil {
 		t.Fatalf("purge with an unsafe user name touched another user's data: %v", err)
+	}
+}
+
+// Only age+gzip uploads are stored: a missing or different scheme is
+// refused before anything touches the disk.
+func TestUploadRequiresEncryption(t *testing.T) {
+	ts, _ := testServer(t, map[string]string{"tok": "u"}, maxUploadBytes)
+	for _, scheme := range []string{"", "none", "AGE+GZIP", "age"} {
+		resp := doReq(t, ts, http.MethodPost, ts.URL+"/api/v1/sessions", "tok", []byte(`{"plain":1}`), map[string]string{
+			"X-Session-Id": "abc", "X-Project": "proj", "X-Encrypted": scheme,
+		})
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("X-Encrypted=%q: status %d, want 400", scheme, resp.StatusCode)
+		}
+	}
+	resp := doReq(t, ts, http.MethodGet, ts.URL+"/api/v1/sessions", "tok", nil, nil)
+	var metas []Meta
+	if err := json.NewDecoder(resp.Body).Decode(&metas); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(metas) != 0 {
+		t.Fatalf("refused uploads were stored: %+v", metas)
 	}
 }

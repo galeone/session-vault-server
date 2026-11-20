@@ -2,7 +2,8 @@
 // session-vault plugin (/save) and serves them back (/fetch).
 //
 // Transcripts are opaque blobs: their JSONL format is internal to Claude Code,
-// and clients may upload them end-to-end encrypted (X-Encrypted header), so
+// and clients upload them end-to-end encrypted (X-Encrypted: age+gzip,
+// required), so
 // the server never parses or inspects them.
 //
 // Configuration (environment variables):
@@ -59,6 +60,12 @@ import (
 
 // maxUploadBytes bounds a single (possibly gzip-compressed) upload body.
 const maxUploadBytes = 128 << 20
+
+// encryptionScheme is the only upload the server accepts: the client's
+// age(gzip(transcript)). Every client save is end-to-end encrypted, so a
+// plaintext upload is a misbehaving client, and refusing it means the
+// server never holds a readable transcript.
+const encryptionScheme = "age+gzip"
 
 var (
 	validName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -369,6 +376,10 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		http.Error(w, "invalid X-Name header (want [A-Za-z0-9_-], max 64 chars)", http.StatusBadRequest)
 		return
 	}
+	if r.Header.Get("X-Encrypted") != encryptionScheme {
+		http.Error(w, "uploads must be end-to-end encrypted (X-Encrypted: "+encryptionScheme+")", http.StatusBadRequest)
+		return
+	}
 	// Plan quotas (hosted mode): a re-save of an id the user already
 	// stores is always allowed; a brand-new session is refused once the
 	// user has stored `limit` unique ids. Env-token principals have no
@@ -400,7 +411,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		body = &limitedReader{r: gz, cap: s.maxUpload}
 	}
 
-	// 0700: the directory may hold plaintext transcripts.
+	// 0700: ciphertext only, but the metadata (cwd, labels) is readable.
 	dir := filepath.Join(s.dataDir, p.user, project)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		internalError(w, err)
@@ -434,7 +445,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		Cwd:        r.Header.Get("X-Cwd"),
 		Size:       size,
 		UploadedAt: time.Now().UTC(),
-		Encrypted:  r.Header.Get("X-Encrypted"),
+		Encrypted:  encryptionScheme,
 	}
 	metaBytes, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -539,12 +550,9 @@ func (s *server) download(w http.ResponseWriter, r *http.Request, p principal) {
 	if !ok {
 		return
 	}
-	contentType := "application/x-ndjson"
-	if m, err := readMeta(metaPath(path)); err == nil && m.Encrypted != "" {
-		contentType = "application/octet-stream"
-		w.Header().Set("X-Encrypted", m.Encrypted)
-	}
-	w.Header().Set("Content-Type", contentType)
+	// Every stored blob is ciphertext (plaintext uploads are refused).
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Encrypted", encryptionScheme)
 	http.ServeFile(w, r, path)
 }
 
