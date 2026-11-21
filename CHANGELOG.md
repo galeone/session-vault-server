@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/galeone/session-vault-server/compare/v2.0.1...v2.0.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* restart the running service when the package is upgraded ([#26](https://github.com/galeone/session-vault-server/issues/26)) ([79f432d](https://github.com/galeone/session-vault-server/commit/79f432d0691e30c8157dea9f41d965b64ff712d4))
+
 ## [2.0.1](https://github.com/galeone/session-vault-server/compare/v2.0.0...v2.0.1) (2026-11-21)
 
 
