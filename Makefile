@@ -15,11 +15,18 @@
 # SVS_NAME (not PKG): some toolchains export PKG in the environment, and
 # make gives environment/command-line variables precedence over the Makefile.
 SVS_NAME := session-vault-server
-# Highest vX.Y.Z tag reachable from HEAD (more forgiving than `git describe`
-# when older tags are still around locally). Note: a bare `git pull` does NOT
-# fetch tags pointing at commits it already has, so after pulling a new
-# release run `git fetch --tags` before building.
-VERSION  ?= $(shell git tag --list --merged HEAD 'v[0-9]*' 2>/dev/null | sed 's/^v//' | sort -V | tail -1)
+# Version: the newest vX.Y.Z tag reachable from HEAD (release-please tags
+# releases), as X.Y.Z when HEAD is that tag. A checkout past its newest tag
+# (unreleased commits, or a release whose tag is not fetched yet: a bare
+# `git pull` right after merging a release PR can beat the tag) is
+# X.Y.Z.rN.gHASH, N commits past X.Y.Z: honest about what is built, and
+# still older than the next release for pacman, dpkg and rpm. Run
+# `git fetch --tags` after pulling a release; override with VERSION=x.y.z.
+ifeq ($(origin VERSION),undefined)
+TAG_VERSION := $(shell git tag --list --merged HEAD 'v[0-9]*' 2>/dev/null | sed 's/^v//' | sort -V | tail -1)
+AHEAD       := $(if $(TAG_VERSION),$(shell git rev-list --count v$(TAG_VERSION)..HEAD 2>/dev/null))
+VERSION     := $(if $(filter-out 0,$(AHEAD)),$(TAG_VERSION).r$(AHEAD).g$(shell git rev-parse --short=7 HEAD),$(TAG_VERSION))
+endif
 DISTDIR  ?= build
 TARBALL  := $(abspath $(DISTDIR))/$(SVS_NAME)-$(VERSION).tar.xz
 ARCHDIR  := $(abspath $(DISTDIR))/arch
@@ -73,7 +80,7 @@ deb: dist
 	tar -xf $(TARBALL) -C $(DEBROOT)
 	mv $(DEBROOT)/$(SVS_NAME)-$(VERSION) $(DEBROOT)/$(SVS_NAME)_$(VERSION)
 	cp -r packaging/debian $(DEBROOT)/$(SVS_NAME)_$(VERSION)/debian
-	printf '%s (%s) unstable; urgency=low\n\n  * Built from git tag v%s.\n\n -- %s  %s\n' \
+	printf '%s (%s) unstable; urgency=low\n\n  * Version %s, built from git.\n\n -- %s  %s\n' \
 		'$(SVS_NAME)' '$(VERSION)' '$(VERSION)' '$(MAINTAINER)' '$(shell LC_ALL=C date -R)' \
 		> $(DEBROOT)/$(SVS_NAME)_$(VERSION)/debian/changelog
 	cd $(DEBROOT)/$(SVS_NAME)_$(VERSION) && dpkg-buildpackage -us -uc -b

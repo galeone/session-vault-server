@@ -36,12 +36,14 @@ make install-rpm        # Fedora/RHEL:   rpmbuild + dnf install
 `make arch` / `make deb` / `make rpm` build the package into `build/`
 without installing it, and `make dist` produces the versioned source
 tarball. The package version is the newest release-please tag (`vX.Y.Z`)
-reachable from HEAD; override with `make VERSION=x.y.z` on an untagged
-tree.
+reachable from HEAD, or `X.Y.Z.rN.gHASH` when HEAD is N commits past it
+(unreleased commits, or a release whose tag is not fetched yet); it still
+sorts below the next release. Override with `make VERSION=x.y.z`.
 
-When upgrading, fetch the new tag first — a bare `git pull` does not fetch
-tags that point at commits it already has, and without the tag the Makefile
-silently rebuilds the previous version:
+When upgrading, fetch the new tag first: a bare `git pull` does not fetch
+tags that point at commits it already has, and right after a release PR is
+merged the tag may not exist yet. Without it the build is labelled as the
+previous version plus `.rN.gHASH`:
 
 ```sh
 git fetch --tags
