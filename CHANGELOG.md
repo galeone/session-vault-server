@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.1](https://github.com/galeone/session-vault-server/compare/v2.0.0...v2.0.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* build the deb in its source tree and unpack the rpm source ([#23](https://github.com/galeone/session-vault-server/issues/23)) ([afd1fbb](https://github.com/galeone/session-vault-server/commit/afd1fbb2e9b1fddc19f3f0b3c194ab926b63e44d))
+* label packages built past the newest tag as X.Y.Z.rN.gHASH ([#25](https://github.com/galeone/session-vault-server/issues/25)) ([a48d9bd](https://github.com/galeone/session-vault-server/commit/a48d9bd21ce279bf0f88470f2297123b1a4cde04))
+
 ## [2.0.0](https://github.com/galeone/session-vault-server/compare/v1.7.0...v2.0.0) (2026-11-21)
 
 
