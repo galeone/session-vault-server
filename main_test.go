@@ -549,7 +549,7 @@ func TestMetaWritten(t *testing.T) {
 
 func TestPurgedAccountIsRefused(t *testing.T) {
 	dir := t.TempDir()
-	userDir := filepath.Join(dir, "gone@example.com", "proj")
+	userDir := filepath.Join(dir, "u_gone", "proj")
 	if err := os.MkdirAll(userDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestPurgedAccountIsRefused(t *testing.T) {
 	past := time.Now().Add(-time.Hour)
 	s := &server{
 		dataDir:   dir,
-		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "gone@example.com", deleteAt: &past}}},
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "u_gone", deleteAt: &past}}},
 		maxUpload: maxUploadBytes,
 	}
 	ts := httptest.NewServer(routes(s))
@@ -571,7 +571,7 @@ func TestPurgedAccountIsRefused(t *testing.T) {
 	if resp.StatusCode != http.StatusGone {
 		t.Fatalf("status = %d, want 410", resp.StatusCode)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "gone@example.com")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "u_gone")); !os.IsNotExist(err) {
 		t.Fatalf("user data dir still exists after purge: %v", err)
 	}
 }
@@ -650,12 +650,12 @@ func TestDownloadPrefersNewestExistingCopy(t *testing.T) {
 }
 
 func TestSafeNamespace(t *testing.T) {
-	for _, ok := range []string{"default", "alice", "bob@example.com", "a.b+tag@example.co.uk", "u-0123abcd"} {
+	for _, ok := range []string{"default", "alice", "u_0123456789abcdef01234567", "team-1"} {
 		if !safeNamespace(ok) {
 			t.Errorf("safeNamespace(%q) = false, want true", ok)
 		}
 	}
-	for _, bad := range []string{"", ".", "..", ".hidden", "x/../victim@example.com", `a\b`, "/abs", "a\x00b", `"z/../bob"@x.com`} {
+	for _, bad := range []string{"", ".", "..", ".hidden", "bob@example.com", "a.b", "x/../u_victim", `a\b`, "/abs", "a\x00b", `"z/../bob"@x.com`} {
 		if safeNamespace(bad) {
 			t.Errorf("safeNamespace(%q) = true, want false", bad)
 		}
@@ -666,7 +666,7 @@ func TestSafeNamespace(t *testing.T) {
 // before any path is built from it.
 func TestUnsafeUserNameIsRefused(t *testing.T) {
 	dir := t.TempDir()
-	victim := filepath.Join(dir, "victim@example.com", "p")
+	victim := filepath.Join(dir, "u_victim", "p")
 	if err := os.MkdirAll(victim, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +675,7 @@ func TestUnsafeUserNameIsRefused(t *testing.T) {
 	}
 	s := &server{
 		dataDir:   dir,
-		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "x/../victim@example.com"}}},
+		tokens:    planStore{m: map[string]principal{hashToken("tok"): {user: "x/../u_victim"}}},
 		maxUpload: maxUploadBytes,
 	}
 	ts := httptest.NewServer(routes(s))
@@ -686,7 +686,7 @@ func TestUnsafeUserNameIsRefused(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("download with an unsafe user name = %d, want 403", resp.StatusCode)
 	}
-	s.purgeAccount(context.Background(), "x/../victim@example.com")
+	s.purgeAccount(context.Background(), "x/../u_victim")
 	if _, err := os.Stat(filepath.Join(victim, "sid.data")); err != nil {
 		t.Fatalf("purge with an unsafe user name touched another user's data: %v", err)
 	}

@@ -194,13 +194,11 @@ func envOr(key, fallback string) string {
 }
 
 // safeNamespace reports whether user can name a directory directly under
-// the data dir: one local path component, not hidden, not "." or "..".
-// Email-shaped names (the hosted app's legacy usernames) pass.
+// the data dir. It is the same rule env-token user names already follow
+// ([A-Za-z0-9_-]+), which the hosted app's opaque u_<hex> usernames also
+// satisfy: no separators, dots or anything else path-like can get through.
 func safeNamespace(user string) bool {
-	return user != "" &&
-		!strings.HasPrefix(user, ".") &&
-		!strings.ContainsAny(user, `/\`+"\x00") &&
-		filepath.IsLocal(user)
+	return validName.MatchString(user)
 }
 
 func hashToken(token string) string {
