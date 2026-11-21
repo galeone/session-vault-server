@@ -20,6 +20,9 @@ expected to be uploaded end-to-end encrypted (age), so the server never
 parses or inspects them. It ships a hardened systemd unit that runs the
 server as an ephemeral dedicated user (DynamicUser).
 
+%prep
+%setup -q
+
 %build
 CGO_ENABLED=0 go build -trimpath \
 	-ldflags "-s -w -X main.version=%{version}" \
