@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.0.0](https://github.com/galeone/session-vault-server/compare/v1.7.0...v2.0.0) (2026-11-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* uploads without X-Encrypted: age+gzip are rejected.
+
+### Bug Fixes
+
+* accept only [A-Za-z0-9_-] user names as storage namespaces ([#22](https://github.com/galeone/session-vault-server/issues/22)) ([34184c0](https://github.com/galeone/session-vault-server/commit/34184c05dceab71cb556759d6dc3278ae78c0500))
+* review findings — path safety, duplicate session ids, log rotation, timeouts ([#20](https://github.com/galeone/session-vault-server/issues/20)) ([083abf2](https://github.com/galeone/session-vault-server/commit/083abf29b201a3ec8e04555745d63fff885b57f1))
+
 ## [1.7.0](https://github.com/galeone/session-vault-server/compare/v1.6.0...v1.7.0) (2026-11-19)
 
 
