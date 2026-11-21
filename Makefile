@@ -76,7 +76,7 @@ deb: dist
 	printf '%s (%s) unstable; urgency=low\n\n  * Built from git tag v%s.\n\n -- %s  %s\n' \
 		'$(SVS_NAME)' '$(VERSION)' '$(VERSION)' '$(MAINTAINER)' '$(shell LC_ALL=C date -R)' \
 		> $(DEBROOT)/$(SVS_NAME)_$(VERSION)/debian/changelog
-	dpkg-buildpackage -us -uc -b
+	cd $(DEBROOT)/$(SVS_NAME)_$(VERSION) && dpkg-buildpackage -us -uc -b
 
 install-deb:
 	@command -v go >/dev/null 2>&1 && command -v dpkg-buildpackage >/dev/null 2>&1 \
