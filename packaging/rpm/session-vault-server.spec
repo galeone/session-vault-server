@@ -42,7 +42,7 @@ install -d -m700 %{buildroot}%{_sysconfdir}/session-vault
 %systemd_preun %{name}.service
 
 %postun
-%systemd_postun %{name}.service
+%systemd_postun_with_restart %{name}.service
 
 %files
 %{_bindir}/%{name}

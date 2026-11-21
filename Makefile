@@ -62,7 +62,7 @@ arch: dist
 	rm -rf $(ARCHDIR)
 	mkdir -p $(ARCHDIR)
 	sed 's/^pkgver=.*/pkgver=$(VERSION)/' packaging/arch/PKGBUILD > $(ARCHDIR)/PKGBUILD
-	cp $(TARBALL) $(ARCHDIR)/
+	cp $(TARBALL) packaging/arch/session-vault-server.install $(ARCHDIR)/
 	cd $(ARCHDIR) && makepkg -f
 
 install-arch:
