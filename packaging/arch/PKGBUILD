@@ -15,6 +15,7 @@ url="https://github.com/galeone/session-vault-server"
 license=(MIT)
 depends=(glibc)
 makedepends=(go)
+install=$pkgname.install
 source=("$pkgname-$pkgver.tar.xz")
 sha256sums=(SKIP)
 
