@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.4](https://github.com/galeone/session-vault-server/compare/v2.0.3...v2.0.4) (2026-11-22)
+
+
+### Bug Fixes
+
+* **deb:** the .deb did not contain the binary ([#30](https://github.com/galeone/session-vault-server/issues/30)) ([5cd7669](https://github.com/galeone/session-vault-server/commit/5cd76693333d18730f8649bef894cd6aeefaf526))
+
 ## [2.0.3](https://github.com/galeone/session-vault-server/compare/v2.0.2...v2.0.3) (2026-11-22)
 
 
