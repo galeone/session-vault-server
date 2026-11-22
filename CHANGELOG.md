@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.5](https://github.com/galeone/session-vault-server/compare/v2.0.4...v2.0.5) (2026-11-22)
+
+
+### Bug Fixes
+
+* **deb:** start the service again after an upgrade ([#32](https://github.com/galeone/session-vault-server/issues/32)) ([c675202](https://github.com/galeone/session-vault-server/commit/c675202391ed35943dc2228e0714d7d3baba5c39))
+
 ## [2.0.4](https://github.com/galeone/session-vault-server/compare/v2.0.3...v2.0.4) (2026-11-22)
 
 
