@@ -10,7 +10,14 @@ if [ ! -d /etc/session-vault ]; then
 		"before the first start (see the README)"
 fi
 
-exit 0
+# The unit is installed with --no-enable --no-start (it needs a
+# configuration first), so debhelper does not restart it on upgrade:
+# restart it here when it is running, or the old binary keeps serving.
+if [ "$1" = configure ] && [ -n "$2" ] && [ -d /run/systemd/system ]; then
+	systemctl daemon-reload >/dev/null || true
+	deb-systemd-invoke try-restart session-vault-server.service >/dev/null || true
+fi
 
-# DEBHELPER_VERSION=15
-# dh_installsystemd appends the unit enable/disable lines to this script.
+#DEBHELPER#
+
+exit 0

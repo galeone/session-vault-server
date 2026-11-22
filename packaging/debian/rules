@@ -4,6 +4,10 @@
 SVS_VERSION := $(shell head -n1 debian/changelog | sed 's/^.*(\(.*\)) .*$$/\1/')
 
 export GOCACHE ?= $(CURDIR)/.gocache
+# debhelper points HOME into the build tree, where Go would download the
+# modules again, read-only: the Makefile passes the user's module cache
+# (GOMODCACHE); a build without it keeps a writable cache instead.
+export GOFLAGS += -modcacherw
 
 %:
 	dh $@
@@ -18,3 +22,10 @@ override_dh_auto_build:
 override_dh_auto_install:
 	install -Dm644 misc/session-vault-server.service \
 		debian/session-vault-server/lib/systemd/system/session-vault-server.service
+
+# Neither enabled nor started at install: the service needs tokens (or
+# the hosted-mode database) first. Enable it once configured:
+#   systemctl enable --now session-vault-server
+# (session-vault-web-setup does it for the hosted mode).
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start

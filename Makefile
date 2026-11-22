@@ -75,6 +75,9 @@ install-arch:
 # --- Debian / Ubuntu (dpkg) ---------------------------------------------
 
 deb: dist
+	# Go leaves its module cache read-only: make any left in an old build
+	# tree writable, or rm cannot remove it.
+	chmod -R u+w $(DEBROOT) 2>/dev/null || true
 	rm -rf $(DEBROOT)
 	mkdir -p $(DEBROOT)
 	tar -xf $(TARBALL) -C $(DEBROOT)
@@ -83,7 +86,7 @@ deb: dist
 	printf '%s (%s) unstable; urgency=low\n\n  * Version %s, built from git.\n\n -- %s  %s\n' \
 		'$(SVS_NAME)' '$(VERSION)' '$(VERSION)' '$(MAINTAINER)' '$(shell LC_ALL=C date -R)' \
 		> $(DEBROOT)/$(SVS_NAME)_$(VERSION)/debian/changelog
-	cd $(DEBROOT)/$(SVS_NAME)_$(VERSION) && dpkg-buildpackage -us -uc -b
+	cd $(DEBROOT)/$(SVS_NAME)_$(VERSION) && GOMODCACHE="$(shell go env GOMODCACHE)" dpkg-buildpackage -us -uc -b
 
 install-deb:
 	@command -v go >/dev/null 2>&1 && command -v dpkg-buildpackage >/dev/null 2>&1 \
