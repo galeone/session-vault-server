@@ -10,12 +10,15 @@ if [ ! -d /etc/session-vault ]; then
 		"before the first start (see the README)"
 fi
 
-# The unit is installed with --no-enable --no-start (it needs a
-# configuration first), so debhelper does not restart it on upgrade:
-# restart it here when it is running, or the old binary keeps serving.
+# On upgrade dpkg stops the unit, and debhelper does not start it again
+# (it is installed --no-start: a fresh install needs a configuration
+# first). A unit that is enabled has been configured, so start it again
+# here: try-restart would do nothing, the unit being already stopped.
 if [ "$1" = configure ] && [ -n "$2" ] && [ -d /run/systemd/system ]; then
 	systemctl daemon-reload >/dev/null || true
-	deb-systemd-invoke try-restart session-vault-server.service >/dev/null || true
+	if systemctl --quiet is-enabled session-vault-server.service; then
+		deb-systemd-invoke restart session-vault-server.service >/dev/null || true
+	fi
 fi
 
 #DEBHELPER#
