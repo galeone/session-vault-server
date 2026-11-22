@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.3](https://github.com/galeone/session-vault-server/compare/v2.0.2...v2.0.3) (2026-11-22)
+
+
+### Bug Fixes
+
+* **deb:** build twice in a row; enable nothing at install, restart on upgrade ([#28](https://github.com/galeone/session-vault-server/issues/28)) ([b4d3101](https://github.com/galeone/session-vault-server/commit/b4d31011f2c971c709eeabdafa98f6c809bf28e0))
+
 ## [2.0.2](https://github.com/galeone/session-vault-server/compare/v2.0.1...v2.0.2) (2026-11-21)
 
 
