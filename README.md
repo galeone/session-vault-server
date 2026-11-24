@@ -2,27 +2,118 @@
 
 A small, self-hosted store for Claude Code session transcripts. The companion
 Claude Code plugin lives in the
-[`session-vault-plugin`](../session-vault-plugin) repository: `/save` uploads
-the current session here, `/fetch` lists and downloads it back on any machine.
+[`session-vault-plugin`](https://github.com/galeone/session-vault-plugin)
+repository: `/session-vault:save` uploads the current session here,
+`/session-vault:fetch` lists and downloads it back on any machine.
 
 Transcripts are treated as opaque blobs — their JSONL format is internal to
 Claude Code, and clients must upload them end-to-end encrypted (age;
 plaintext uploads are refused), so the server never parses, inspects or
 can read them.
 
-## Build & run
+If you'd rather not run a server, there's a hosted version at
+[session-vault.dev](https://session-vault.dev).
+
+## Quick start
+
+1. **Get the binary.** Download the one for your platform from the
+   [latest release](https://github.com/galeone/session-vault-server/releases/latest)
+   (static builds for linux, darwin and windows, amd64 and arm64) and check
+   it against `checksums.txt`:
+
+   ```sh
+   curl -LO https://github.com/galeone/session-vault-server/releases/latest/download/session-vault-server_linux_amd64
+   curl -LO https://github.com/galeone/session-vault-server/releases/latest/download/checksums.txt
+   sha256sum -c --ignore-missing checksums.txt
+   chmod +x session-vault-server_linux_amd64
+   ```
+
+   Or [build it from source](#building-from-source), or install it as a
+   [systemd service](#running-under-systemd--distro-packages).
+
+2. **Create a token and start the server.** Only the token's hash goes to
+   the server; the token itself goes to the plugin:
+
+   ```sh
+   TOKEN=$(openssl rand -hex 32)                    # keep this for step 4
+   HASH=$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)
+   SESSION_VAULT_TOKEN_HASHES=$HASH:me SESSION_VAULT_DATA=$HOME/session-vault \
+     ./session-vault-server_linux_amd64           # listens on :8080
+   ```
+
+3. **Put it behind TLS.** The bearer token travels in a header, so expose
+   the server only through a reverse proxy with HTTPS. See
+   [Reverse proxy](#reverse-proxy) for Caddy and nginx examples (nginx
+   needs a larger body limit).
+
+4. **Point the plugin at it.** Install the plugin in Claude Code:
+
+   ```
+   /plugin marketplace add galeone/session-vault-plugin
+   /plugin install session-vault@galeone-plugins
+   ```
+
+   then create `~/.config/session-vault/config` on each of your machines:
+
+   ```sh
+   SESSION_VAULT_URL=https://vault.example.com
+   SESSION_VAULT_TOKEN=<the TOKEN from step 2>
+   ```
+
+   Run `/session-vault:save`. The first save creates your age key in
+   `~/.config/session-vault/age.key`: copy it to every machine that will
+   fetch these sessions, and keep a backup. Without it nobody can decrypt
+   them, you included.
+
+## Reverse proxy
+
+Uploads can be large (a long transcript is several MB; the server accepts
+up to 128 MiB per request), so make sure the proxy doesn't cap the body
+size below that.
+
+Caddy (automatic HTTPS, no body limit by default):
+
+```
+vault.example.com {
+	reverse_proxy localhost:8080
+}
+```
+
+nginx (its default `client_max_body_size` is 1 MB, which makes most
+uploads fail with 413):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name vault.example.com;
+    # ssl_certificate / ssl_certificate_key ...
+
+    client_max_body_size 128m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+## Building from source
+
+Requires Go (the version in [go.mod](go.mod)):
 
 ```sh
 go build -o session-vault-server .
-
-SESSION_VAULT_TOKEN=some-long-random-token ./session-vault-server
 ```
 
 ## Running under systemd / distro packages
 
 The easiest way to run the server as a system service is the native distro
 package, built from the repository with the [Makefile](Makefile) (in the
-style of [gpu-unlock](https://github.com/Zagitta/gpu-unlock)):
+style of [gpu-unlock](https://github.com/Zagitta/gpu-unlock)). It needs a
+git clone of this repository, Go, your distro's packaging tools
+(`makepkg`, `dpkg-buildpackage` or `rpmbuild`) and sudo:
 
 ```sh
 make install            # detect the distro from /etc/os-release and install
@@ -54,11 +145,12 @@ The package installs:
 
 - `/usr/bin/session-vault-server`
 - the hardened unit [misc/session-vault-server.service](misc/session-vault-server.service)
-  (enabled on install) — it runs the server as the dedicated ephemeral user
-  `session-vault` (`DynamicUser=`), so it never runs as root or a login user
+  — it runs the server as the dedicated ephemeral user `session-vault`
+  (`DynamicUser=`), so it never runs as root or a login user
 - `/etc/session-vault/` (0700) for the service environment
 
-Before the first start, set the tokens:
+The service is not enabled or started at install, because it needs a
+token first. Set the tokens, then enable and start it:
 
 ```sh
 TOKEN=$(openssl rand -hex 32)                  # keep this: it goes to the client
@@ -67,7 +159,7 @@ sudo tee /etc/session-vault/session-vault.env >/dev/null <<EOF
 SESSION_VAULT_TOKEN_HASHES=$HASH:default
 EOF
 sudo chmod 0600 /etc/session-vault/session-vault.env
-sudo systemctl restart session-vault-server
+sudo systemctl enable --now session-vault-server
 ```
 
 - Data: `/var/lib/session-vault/` (owned by the dynamic user). Logs:
@@ -116,24 +208,6 @@ except its state directories, and `StateDirectory=` is what creates the
 directory and chowns it to the ephemeral `session-vault` user on every
 boot. Without it the server would start and immediately fail to write.
 
-Postgres ordering (hosted mode, `postgresql.service` on the same host):
-
-```sh
-sudo systemctl edit session-vault-server
-```
-
-```ini
-[Unit]
-Wants=postgresql.service
-After=postgresql.service
-```
-
-Only relevant when `SESSION_VAULT_DB_DSN` is set: without it the vault
-simply starts first, fails to connect, and is retried every two seconds
-until Postgres is up — it self-heals, it just burns a few cycles at boot.
-`Wants=`, not `Requires=`: if Postgres stops later (or is restarted),
-the vault must not be dragged down with it.
-
 Then `sudo systemctl restart session-vault-server` (no `daemon-reload`
 needed — `systemctl edit` reloads the daemon for you). Verify with
 `systemctl show session-vault-server -p Environment` and
@@ -154,8 +228,6 @@ Packaging sources live in `packaging/` (`arch/PKGBUILD`, `debian/`,
 | `SESSION_VAULT_LOG_LEVEL` | `info` | Log level: `debug` `info` `warn` `error` |
 | `SESSION_VAULT_LOG_DIR` | — | Directory for the daily log files |
 | `SESSION_VAULT_LOG_FILE` | — | Log to this file instead of the daily log |
-| `SESSION_VAULT_DB_DSN` | — | Postgres DSN; when set, tokens and plans come from the database instead of the env vars above (hosted mode) |
-| `SESSION_VAULT_BASE_URL` | — | Base URL of the session-vault-web app; when set, the 402 `session limit reached` error offers `<base>/account` as `upgrade_url` (hosted mode) |
 
 At least one token must be configured. Each token maps to a user, and every
 user only ever sees their own sessions. Tokens are compared by SHA-256 hash;
@@ -169,120 +241,6 @@ printf '%s' "$TOKEN" | sha256sum        # give the hash to the server, keep TOKE
 # on the server:
 SESSION_VAULT_TOKEN_HASHES=<hash>:paolo ./session-vault-server
 ```
-
-## Hosted mode: Postgres tokens and plan quotas
-
-Setting `SESSION_VAULT_DB_DSN` switches the token source from the
-environment to a Postgres database. This is how the hosted service
-registers users, hands out tokens, and limits each plan: the server looks
-up `sha256(token)` in `vault_tokens` and joins `vault_users` for the
-namespace (`username`) and the quota (`plan`). The env token vars are
-ignored in this mode, and a failed database connection is fatal at startup
-— the vault would just 401 everyone.
-
-The server assumes this schema (owned by the hosted application):
-
-```sql
-CREATE TABLE vault_users (
-  id             BIGSERIAL PRIMARY KEY,
-  username       TEXT NOT NULL UNIQUE,
-  email          TEXT NOT NULL UNIQUE,
-  plan           TEXT NOT NULL DEFAULT 'free',
-  -- Deferred plan changes: an upgrade sets plan immediately and clears
-  -- these; a downgrade sets pending_plan + plan_change_at (end of the
-  -- paid period). The effective plan is computed at lookup time, so no
-  -- background flip is needed.
-  pending_plan   TEXT,
-  plan_change_at TIMESTAMPTZ,
-  -- Account deletion: the web app sets this to now() + 30 days when the
-  -- user asks for a deletion (grace period, cancellable).
-  delete_at      TIMESTAMPTZ,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE vault_tokens (
-  id         BIGSERIAL PRIMARY KEY,
-  user_id    BIGINT NOT NULL REFERENCES vault_users(id) ON DELETE CASCADE,
-  token_hash TEXT NOT NULL UNIQUE,
-  label      TEXT NOT NULL DEFAULT '',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX vault_tokens_user_idx ON vault_tokens (user_id);
-```
-
-`token_hash` stores the lowercase hex SHA-256 of the bearer token — the
-vault never sees or stores the raw token.
-
-### Plans and quotas
-
-| Plan | Sessions storable |
-|---|---|
-| `free` | 10 |
-| `plus` | 100 |
-| `max` | 500 |
-
-A quota counts the **unique session ids** a user stores across all
-projects. Re-saving an id the user already has is always allowed (updates
-are free); only a *new* session is refused once the cap is hit, with HTTP
-402 and a JSON body the client can relay to the user:
-
-```json
-{"error": "session limit reached", "plan": "free", "limit": 10, "used": 10, "upgrade_url": "https://your.vault.example/account"}
-```
-
-The `upgrade_url` field is only present when `SESSION_VAULT_BASE_URL` is
-set (a self-hosted deployment has no billing page to point at).
-
-Listing, downloading, and deleting are never blocked by the quota. A plan
-value the server doesn't know is fail-closed (HTTP 403 + server log), so a
-typo'd plan can never silently mean "unlimited". Env-token principals have
-no plan and remain unlimited.
-
-### Plan changes (upgrades and downgrades)
-
-The vault only ever enforces `plan` as stored; the *timing* of a change is
-the billing application's job, using `pending_plan` / `plan_change_at`:
-
-- **Upgrade** — takes effect immediately:
-  `UPDATE vault_users SET plan = 'max', pending_plan = NULL, plan_change_at = NULL WHERE ...;`
-- **Downgrade** — takes effect at the end of the paid period, so the user
-  keeps their current plan for what they already paid for:
-  `UPDATE vault_users SET pending_plan = 'free', plan_change_at = <period_end> WHERE ...;`
-
-No cron, goroutine, or "flip" job is needed anywhere: the vault computes
-the *effective* plan at lookup time — `pending_plan` wins the moment
-`plan_change_at` has passed, `plan` otherwise. The change takes effect
-with zero drift, on every instance, without any process owning the
-transition. (The billing app may optionally normalize the row later — set
-`plan = pending_plan`, clear the pending columns — but that is cosmetic.)
-
-Downgrade consequences at the vault, once the due time has passed: the
-existing sessions (possibly far above the new limit) stay fully
-accessible — list, download, and delete are never quota-gated and the
-vault never deletes user data — re-saves of ids the user already stores
-keep working, and only *new* sessions are refused with the 402 above
-until the stored count drops below the new limit. The downgrade
-confirmation page should warn the user to export or delete what they no
-longer need.
-
-### Account deletion (30-day grace period)
-
-The web app sets `delete_at = now() + interval '30 days'` when a user
-asks to delete the account, and `NULL` to cancel. The vault does the
-purging:
-
-- while `delete_at` is in the future the account works normally;
-- once it has passed, the next authenticated request gets HTTP 410 and
-  triggers the purge immediately (`data/<user>` removed from disk, then
-  `DELETE FROM vault_users` — tokens and sessions cascade);
-- an hourly sweep purges expired accounts of users who never come back,
-  so the data is never kept past the grace period.
-
-The purge is idempotent (disk removal and row deletion are independent
-and race-safe), and a scheduled deletion never blocks anything in the
-meantime — including re-saves and quota, which keep working until the
-purge runs.
 
 ## API
 
