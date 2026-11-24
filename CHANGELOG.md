@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/galeone/session-vault-server/compare/v2.0.5...v2.1.0) (2026-11-24)
+
+
+### Features
+
+* accept age+gzip+tar uploads for subagent transcript bundles ([#35](https://github.com/galeone/session-vault-server/issues/35)) ([34e8d3d](https://github.com/galeone/session-vault-server/commit/34e8d3d31a9c8534648f671528d5d7a347a2c3ae))
+
 ## [2.0.5](https://github.com/galeone/session-vault-server/compare/v2.0.4...v2.0.5) (2026-11-22)
 
 
