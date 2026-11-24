@@ -11,8 +11,8 @@ Claude Code, and clients must upload them end-to-end encrypted (age;
 plaintext uploads are refused), so the server never parses, inspects or
 can read them.
 
-Don't want to run a server? [session-vault.dev](https://session-vault.dev)
-hosts this same server, with a free plan.
+If you'd rather not run a server, there's a hosted version at
+[session-vault.dev](https://session-vault.dev).
 
 ## Quick start
 
@@ -208,24 +208,6 @@ except its state directories, and `StateDirectory=` is what creates the
 directory and chowns it to the ephemeral `session-vault` user on every
 boot. Without it the server would start and immediately fail to write.
 
-Postgres ordering (hosted mode, `postgresql.service` on the same host):
-
-```sh
-sudo systemctl edit session-vault-server
-```
-
-```ini
-[Unit]
-Wants=postgresql.service
-After=postgresql.service
-```
-
-Only relevant when `SESSION_VAULT_DB_DSN` is set: without it the vault
-simply starts first, fails to connect, and is retried every two seconds
-until Postgres is up — it self-heals, it just burns a few cycles at boot.
-`Wants=`, not `Requires=`: if Postgres stops later (or is restarted),
-the vault must not be dragged down with it.
-
 Then `sudo systemctl restart session-vault-server` (no `daemon-reload`
 needed — `systemctl edit` reloads the daemon for you). Verify with
 `systemctl show session-vault-server -p Environment` and
@@ -246,8 +228,6 @@ Packaging sources live in `packaging/` (`arch/PKGBUILD`, `debian/`,
 | `SESSION_VAULT_LOG_LEVEL` | `info` | Log level: `debug` `info` `warn` `error` |
 | `SESSION_VAULT_LOG_DIR` | — | Directory for the daily log files |
 | `SESSION_VAULT_LOG_FILE` | — | Log to this file instead of the daily log |
-| `SESSION_VAULT_DB_DSN` | — | Postgres DSN; when set, tokens and plans come from the database instead of the env vars above (hosted mode) |
-| `SESSION_VAULT_BASE_URL` | — | Base URL of the session-vault-web app; when set, the 402 `session limit reached` error offers `<base>/account` as `upgrade_url` (hosted mode) |
 
 At least one token must be configured. Each token maps to a user, and every
 user only ever sees their own sessions. Tokens are compared by SHA-256 hash;
@@ -261,12 +241,6 @@ printf '%s' "$TOKEN" | sha256sum        # give the hash to the server, keep TOKE
 # on the server:
 SESSION_VAULT_TOKEN_HASHES=<hash>:paolo ./session-vault-server
 ```
-
-## Hosted mode
-
-Setting `SESSION_VAULT_DB_DSN` switches tokens and per-plan quotas to a
-Postgres database. That's how the hosted service runs; self-hosting doesn't
-need it. Details, schema and plan rules: [docs/hosted.md](docs/hosted.md).
 
 ## API
 
