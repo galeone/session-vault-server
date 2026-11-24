@@ -2,9 +2,9 @@
 // session-vault plugin (/save) and serves them back (/fetch).
 //
 // Transcripts are opaque blobs: their JSONL format is internal to Claude Code,
-// and clients upload them end-to-end encrypted (X-Encrypted: age+gzip,
-// required), so
-// the server never parses or inspects them.
+// and clients upload them end-to-end encrypted (X-Encrypted: age+gzip, or
+// age+gzip+tar for a transcript bundled with its subagent transcripts;
+// required), so the server never parses or inspects them.
 //
 // Configuration (environment variables):
 //
@@ -60,11 +60,21 @@ import (
 // maxUploadBytes bounds a single upload body (the age ciphertext).
 const maxUploadBytes = 128 << 20
 
-// encryptionScheme is the only upload the server accepts: the client's
-// age(gzip(transcript)). Every client save is end-to-end encrypted, so a
-// plaintext upload is a misbehaving client, and refusing it means the
-// server never holds a readable transcript.
+// encryptionScheme is the client's age(gzip(transcript)). Every client
+// save is end-to-end encrypted, so a plaintext upload is a misbehaving
+// client, and refusing it means the server never holds a readable
+// transcript.
 const encryptionScheme = "age+gzip"
+
+// bundleScheme is age(gzip(tar)): the transcript plus the subagent
+// transcripts next to it. It has its own name so a client that only knows
+// encryptionScheme refuses it ("update the plugin") instead of writing a
+// tar archive where a transcript belongs.
+const bundleScheme = "age+gzip+tar"
+
+// acceptedSchemes are the X-Encrypted values uploads are stored with. The
+// server never decrypts: the scheme is recorded and returned as is.
+var acceptedSchemes = map[string]bool{encryptionScheme: true, bundleScheme: true}
 
 var (
 	validName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -80,8 +90,8 @@ type Meta struct {
 	Cwd        string    `json:"cwd,omitempty"`
 	Size       int64     `json:"size"`
 	UploadedAt time.Time `json:"uploaded_at"`
-	// Encrypted is the encryption scheme of the blob: always "age+gzip",
-	// the only one uploads are accepted with.
+	// Encrypted is the encryption scheme of the blob, one of
+	// acceptedSchemes. Old metadata without it is "age+gzip".
 	Encrypted string `json:"encrypted,omitempty"`
 }
 
@@ -351,8 +361,9 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		http.Error(w, "invalid X-Name header (want [A-Za-z0-9_-], max 64 chars)", http.StatusBadRequest)
 		return
 	}
-	if r.Header.Get("X-Encrypted") != encryptionScheme {
-		http.Error(w, "uploads must be end-to-end encrypted (X-Encrypted: "+encryptionScheme+")", http.StatusBadRequest)
+	scheme := r.Header.Get("X-Encrypted")
+	if !acceptedSchemes[scheme] {
+		http.Error(w, "uploads must be end-to-end encrypted (X-Encrypted: "+encryptionScheme+" or "+bundleScheme+")", http.StatusBadRequest)
 		return
 	}
 	// The body is stored byte for byte. Transport compression only ever
@@ -418,7 +429,7 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request, p principal) {
 		Cwd:        r.Header.Get("X-Cwd"),
 		Size:       size,
 		UploadedAt: time.Now().UTC(),
-		Encrypted:  encryptionScheme,
+		Encrypted:  scheme,
 	}
 	metaBytes, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -524,8 +535,12 @@ func (s *server) download(w http.ResponseWriter, r *http.Request, p principal) {
 		return
 	}
 	// Every stored blob is ciphertext (plaintext uploads are refused).
+	scheme := encryptionScheme
+	if m, err := readMeta(metaPath(path)); err == nil && m.Encrypted != "" {
+		scheme = m.Encrypted
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("X-Encrypted", encryptionScheme)
+	w.Header().Set("X-Encrypted", scheme)
 	http.ServeFile(w, r, path)
 }
 

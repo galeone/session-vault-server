@@ -248,9 +248,9 @@ All endpoints (except `/healthz`) require `Authorization: Bearer <token>`.
 
 | Method & path | Description |
 |---|---|
-| `POST /api/v1/sessions` | Upload a session blob. Headers: `X-Session-Id`, `X-Project` (required, `[A-Za-z0-9_-]+`), `X-Cwd` (optional), `X-Name` (optional user-chosen label, `[A-Za-z0-9_-]{1,64}`; an unnamed re-upload keeps the existing label), `X-Encrypted: age+gzip` (required: plaintext uploads are refused with 400, so the server only ever stores ciphertext). Body: the `age(gzip(transcript))` ciphertext. No `Content-Encoding` (415): the body is stored byte for byte. Returns the stored metadata. Re-uploading the same id overwrites (last write wins). |
+| `POST /api/v1/sessions` | Upload a session blob. Headers: `X-Session-Id`, `X-Project` (required, `[A-Za-z0-9_-]+`), `X-Cwd` (optional), `X-Name` (optional user-chosen label, `[A-Za-z0-9_-]{1,64}`; an unnamed re-upload keeps the existing label), `X-Encrypted` (required: `age+gzip` for `age(gzip(transcript))`, or `age+gzip+tar` for `age(gzip(tar))` of the transcript and its subagent transcripts; anything else, plaintext included, is refused with 400, so the server only ever stores ciphertext). Body: the ciphertext. No `Content-Encoding` (415): the body is stored byte for byte. Returns the stored metadata. Re-uploading the same id overwrites (last write wins). |
 | `GET /api/v1/sessions` | List the caller's sessions as a JSON array of metadata, newest first |
-| `GET /api/v1/sessions/{id}` | Download one blob exactly as stored (`application/octet-stream`, with `X-Encrypted: age+gzip`) |
+| `GET /api/v1/sessions/{id}` | Download one blob exactly as stored (`application/octet-stream`, with the `X-Encrypted` scheme it was uploaded with) |
 | `GET /api/v1/sessions/{id}/meta` | Metadata for one session |
 | `DELETE /api/v1/sessions/{id}` | Remove a session (blob and metadata). Scoped to the caller's own sessions; if the id exists under several projects, all copies are removed. Returns `{"deleted": N}` |
 | `GET /healthz` | Liveness check, no auth |
@@ -319,8 +319,9 @@ stdout only and keeps running.
 ## Security notes
 
 - **Encryption is end-to-end and enforced**: the client encrypts with its
-  age key and the server refuses any upload not marked `age+gzip`, so
-  `.data` files are ciphertext the server cannot decrypt. Session metadata
+  age key and the server refuses any upload not marked `age+gzip` or
+  `age+gzip+tar`, so `.data` files are ciphertext the server cannot
+  decrypt. Session metadata
   (ids, project slugs, original cwd, labels) is not encrypted — treat the
   data directory as sensitive.
 - Run behind TLS (e.g. a reverse proxy such as Caddy or nginx): bearer tokens
