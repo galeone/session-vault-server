@@ -507,6 +507,43 @@ func TestEncryptedDownloadContentType(t *testing.T) {
 	}
 }
 
+// A bundle keeps its scheme: list and download report age+gzip+tar, so a
+// client that only knows age+gzip refuses it instead of misreading it.
+func TestBundleSchemeRoundTrip(t *testing.T) {
+	ts, _ := testServer(t, map[string]string{"tok": "default"}, maxUploadBytes)
+	resp := doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", []byte(`ciphertext`), map[string]string{
+		"X-Session-Id": "abc", "X-Project": "proj", "X-Encrypted": bundleScheme,
+	})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("bundle upload: status %d", resp.StatusCode)
+	}
+	resp = doReq(t, ts, "GET", ts.URL+"/api/v1/sessions", "tok", nil, nil)
+	var metas []Meta
+	if err := json.NewDecoder(resp.Body).Decode(&metas); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(metas) != 1 || metas[0].Encrypted != bundleScheme {
+		t.Fatalf("list: %+v, want one %s session", metas, bundleScheme)
+	}
+	resp = doReq(t, ts, "GET", ts.URL+"/api/v1/sessions/abc", "tok", nil, nil)
+	_ = resp.Body.Close()
+	if enc := resp.Header.Get("X-Encrypted"); enc != bundleScheme {
+		t.Fatalf("download X-Encrypted = %q, want %s", enc, bundleScheme)
+	}
+	// Re-saving as a plain transcript switches the scheme back.
+	resp = doReq(t, ts, "POST", ts.URL+"/api/v1/sessions", "tok", []byte(`ciphertext`), map[string]string{
+		"X-Session-Id": "abc", "X-Project": "proj", "X-Encrypted": encryptionScheme,
+	})
+	_ = resp.Body.Close()
+	resp = doReq(t, ts, "GET", ts.URL+"/api/v1/sessions/abc", "tok", nil, nil)
+	_ = resp.Body.Close()
+	if enc := resp.Header.Get("X-Encrypted"); enc != encryptionScheme {
+		t.Fatalf("after a plain re-save X-Encrypted = %q, want %s", enc, encryptionScheme)
+	}
+}
+
 func TestDownloadNotFound(t *testing.T) {
 	ts, _ := testServer(t, map[string]string{"tok": "default"}, maxUploadBytes)
 	if resp := doReq(t, ts, "GET", ts.URL+"/api/v1/sessions/nope", "tok", nil, nil); resp.StatusCode != http.StatusNotFound {
@@ -692,11 +729,11 @@ func TestUnsafeUserNameIsRefused(t *testing.T) {
 	}
 }
 
-// Only age+gzip uploads are stored: a missing or different scheme is
+// Only age+gzip and age+gzip+tar uploads are stored: a missing or different scheme is
 // refused before anything touches the disk.
 func TestUploadRequiresEncryption(t *testing.T) {
 	ts, _ := testServer(t, map[string]string{"tok": "u"}, maxUploadBytes)
-	for _, scheme := range []string{"", "none", "AGE+GZIP", "age"} {
+	for _, scheme := range []string{"", "none", "AGE+GZIP", "age", "age+tar", "age+gzip+tar+x"} {
 		resp := doReq(t, ts, http.MethodPost, ts.URL+"/api/v1/sessions", "tok", []byte(`{"plain":1}`), map[string]string{
 			"X-Session-Id": "abc", "X-Project": "proj", "X-Encrypted": scheme,
 		})
